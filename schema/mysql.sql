@@ -8,5 +8,5 @@ CREATE TABLE IF NOT EXISTS dkim (
   created_at      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_domain_selector (domain, selector),
-  KEY idx_domain (domain)
+  KEY idx_domain_lookup ((lower(trim(domain))), created_at, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

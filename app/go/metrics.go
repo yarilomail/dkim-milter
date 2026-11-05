@@ -10,13 +10,13 @@ import (
 
 var (
 	signResults = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "dkim_messages_total", Help: "Messages seen, by result: signed, no_key, no_from, tempfail, error.",
+		Name: "dkim_messages_total", Help: "Messages seen, by result: signed, no_key, no_from, unauthorized, tempfail, error.",
 	}, []string{"result"})
 	keysLoaded = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "dkim_keys_loaded", Help: "Domains with a key in the cache.",
 	})
 	cacheLookups = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "dkim_key_cache_lookups_total", Help: "Key lookups, by result: hit, negative_hit (cached as keyless), miss.",
+		Name: "dkim_key_cache_lookups_total", Help: "Key lookups, by result: hit, negative_hit (cached as keyless), stale (served while read again), miss.",
 	}, []string{"result"})
 	keyFetchErrors = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dkim_key_fetch_errors_total", Help: "Key fetches that failed, by stage: db, vault, parse.",

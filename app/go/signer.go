@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -31,10 +30,15 @@ var signedHeaders = []string{
 // session signs one message as it streams: the signer is made at the end of
 // the headers and the body goes straight into it, so no body is held.
 type session struct {
-	keys    *keyCache
+	keys *keyCache
+	// signAuth is SIGN_AUTH: aligned or any.
+	signAuth string
 	headers bytes.Buffer
 	from    string
 	queueID string
+	// authUser is the SASL login ({auth_authen}) of the client, empty when
+	// the client did not authenticate.
+	authUser string
 
 	signer *dkim.Signer
 	key    key
@@ -46,7 +50,7 @@ func (s *session) reset() {
 		_ = s.signer.Close()
 	}
 	s.headers.Reset()
-	s.from, s.queueID = "", ""
+	s.from, s.queueID, s.authUser = "", "", ""
 	s.signer, s.key, s.err = nil, key{}, nil
 }
 
@@ -58,11 +62,28 @@ func (s *session) Helo(string, *milter.Modifier) (milter.Response, error) {
 	return milter.RespContinue, nil
 }
 
-// MailFrom does not read the queue id: with smtpd_delay_open_until_valid_rcpt
-// Postfix has none until the first accepted RCPT.
-func (s *session) MailFrom(string, *milter.Modifier) (milter.Response, error) {
+// MailFrom keeps the SASL login, which Postfix sends with MAIL FROM. It does
+// not read the queue id: with smtpd_delay_open_until_valid_rcpt Postfix has
+// none until the first accepted RCPT.
+func (s *session) MailFrom(_ string, m *milter.Modifier) (milter.Response, error) {
 	s.reset()
+	s.authUser = strings.TrimSpace(m.Macros["{auth_authen}"])
 	return milter.RespContinue, nil
+}
+
+// mayUse says whether the client may have mail of domain signed. Without
+// a login never; with SIGN_AUTH=any every login, the listener having let
+// in only the accounts it trusts; with aligned only a user of that domain.
+func (s *session) mayUse(domain string) bool {
+	login := strings.ToLower(s.authUser)
+	if login == "" {
+		return false
+	}
+	if s.signAuth == signAuthAny {
+		return true
+	}
+	at := strings.LastIndexByte(login, '@')
+	return at >= 0 && login[at+1:] == domain
 }
 
 func (s *session) RcptTo(string, *milter.Modifier) (milter.Response, error) {
@@ -91,20 +112,21 @@ func (s *session) Headers(_ textproto.MIMEHeader, m *milter.Modifier) (milter.Re
 		log.Info("dkim: not signed, no From domain")
 		return milter.RespAccept, nil
 	}
+	if !s.mayUse(domain) {
+		signResults.WithLabelValues("unauthorized").Inc()
+		log.Warn("dkim: not signed, the client may not sign for the From domain", "auth_user", s.authUser)
+		return milter.RespAccept, nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
 	k, ok, err := s.keys.lookup(ctx, domain)
 	cancel()
-	if errors.Is(err, errUnavailable) {
-		// No key in the cache and none to be read now: the MTA keeps the
-		// message and tries again, rather than sending it unsigned.
+	if err != nil {
+		// lookup fails only as errUnavailable: no key in the cache and none to
+		// be read now. The MTA keeps the message and tries again, rather than
+		// sending it unsigned.
 		signResults.WithLabelValues("tempfail").Inc()
 		log.Warn("dkim: tempfail, the key cannot be read", "err", err)
 		return milter.RespTempFail, nil
-	}
-	if err != nil {
-		signResults.WithLabelValues("error").Inc()
-		log.Error("dkim: not signed", "err", err)
-		return milter.RespAccept, nil
 	}
 	if !ok {
 		signResults.WithLabelValues("no_key").Inc()
