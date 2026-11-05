@@ -120,7 +120,7 @@ Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selec
 | `vault.caCertSecret` | --- | Secret with `ca.crt` |
 | `logLevel` | --- | `debug` |
 
-The chart creates the ServiceAccount `dkim-milter`; its token is mounted only with `keyDecrypt: vault`. `helm_values/values-sandbox.yaml` reads the yarilo stand's MySQL table with keys in the clear; `helm_values/values-keptemail.yaml` reads PostgreSQL with Vault Transit.
+The stand installs it with `helm upgrade` in `yarilo-relay`, beside yarilo-postfix; keptemail's ArgoCD application lives in `k8s_keptemail` with the cluster's other applications. The chart creates the ServiceAccount `dkim-milter`; its token is mounted only with `keyDecrypt: vault`. `helm_values/values-sandbox.yaml` reads the yarilo stand's MySQL table with keys in the clear; `helm_values/values-keptemail.yaml` reads PostgreSQL with Vault Transit.
 
 The DSN Secret:
 
