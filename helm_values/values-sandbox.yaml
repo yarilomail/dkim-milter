@@ -13,7 +13,6 @@ db:
   dsnSecret:
     name: dkim-milter-db
     key: DB_DSN
-  query: "SELECT domain, selector, private_key_enc FROM dkim"
 
 keyDecrypt: vault
 

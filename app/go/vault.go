@@ -7,22 +7,36 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
-// vaultTransit decrypts stored keys with Vault Transit, logging in with the
-// pod's service-account token each time: a decrypt is rare, a token kept
-// between them would only have to be renewed.
+// vaultTransit decrypts stored keys with Vault Transit. The Kubernetes-auth
+// token is kept until shortly before its TTL ends and taken again on a 403.
 type vaultTransit struct {
 	cfg  vaultConfig
 	http *http.Client
+	now  func() time.Time
+
+	mu      sync.Mutex
+	token   string
+	expires time.Time
 }
+
+// statusError is a Vault answer other than 200.
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e *statusError) Error() string { return fmt.Sprintf("HTTP %d: %s", e.code, e.msg) }
 
 func newVaultTransit(cfg vaultConfig) (*vaultTransit, error) {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
@@ -37,7 +51,7 @@ func newVaultTransit(cfg vaultConfig) (*vaultTransit, error) {
 		}
 		tr.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 	}
-	return &vaultTransit{cfg: cfg, http: &http.Client{Transport: tr, Timeout: 15 * time.Second}}, nil
+	return &vaultTransit{cfg: cfg, http: &http.Client{Transport: tr, Timeout: 15 * time.Second}, now: time.Now}, nil
 }
 
 func (v *vaultTransit) call(ctx context.Context, path, token string, in, out any) error {
@@ -64,7 +78,7 @@ func (v *vaultTransit) call(ctx context.Context, path, token string, in, out any
 			Errors []string `json:"errors"`
 		}
 		_ = json.Unmarshal(raw, &e)
-		return fmt.Errorf("vault: %s: HTTP %d: %s", path, resp.StatusCode, strings.Join(e.Errors, "; "))
+		return fmt.Errorf("vault: %s: %w", path, &statusError{code: resp.StatusCode, msg: strings.Join(e.Errors, "; ")})
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("vault: %s: decode: %w", path, err)
@@ -72,29 +86,53 @@ func (v *vaultTransit) call(ctx context.Context, path, token string, in, out any
 	return nil
 }
 
-func (v *vaultTransit) login(ctx context.Context) (string, error) {
+// tokenFor is the kept token, or a new one when it is missing or near its end.
+func (v *vaultTransit) tokenFor(ctx context.Context, fresh bool) (string, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if !fresh && v.token != "" && v.now().Before(v.expires) {
+		return v.token, nil
+	}
+	tok, ttl, err := v.login(ctx)
+	if err != nil {
+		v.token = ""
+		return "", err
+	}
+	// Renew at four fifths of the TTL, so a token never runs out mid-request.
+	v.token, v.expires = tok, v.now().Add(ttl*4/5)
+	return tok, nil
+}
+
+// Check logs in: /readyz waits for one success.
+func (v *vaultTransit) Check(ctx context.Context) error {
+	_, err := v.tokenFor(ctx, false)
+	return err
+}
+
+func (v *vaultTransit) login(ctx context.Context) (string, time.Duration, error) {
 	jwt, err := os.ReadFile(v.cfg.tokenFile)
 	if err != nil {
-		return "", fmt.Errorf("vault: read service-account token: %w", err)
+		return "", 0, fmt.Errorf("vault: read service-account token: %w", err)
 	}
 	var out struct {
 		Auth struct {
-			ClientToken string `json:"client_token"`
+			ClientToken   string `json:"client_token"`
+			LeaseDuration int    `json:"lease_duration"`
 		} `json:"auth"`
 	}
 	in := map[string]string{"role": v.cfg.role, "jwt": strings.TrimSpace(string(jwt))}
 	if err := v.call(ctx, "auth/"+v.cfg.authPath+"/login", "", in, &out); err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if out.Auth.ClientToken == "" {
-		return "", fmt.Errorf("vault: login returned no token")
+		return "", 0, fmt.Errorf("vault: login returned no token")
 	}
-	return out.Auth.ClientToken, nil
+	return out.Auth.ClientToken, time.Duration(out.Auth.LeaseDuration) * time.Second, nil
 }
 
 // Decrypt sends every ciphertext in one batch request; an item that fails is nil.
 func (v *vaultTransit) Decrypt(ctx context.Context, stored []string) ([][]byte, error) {
-	token, err := v.login(ctx)
+	token, err := v.tokenFor(ctx, false)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +153,16 @@ func (v *vaultTransit) Decrypt(ctx context.Context, stored []string) ([][]byte, 
 			} `json:"batch_results"`
 		} `json:"data"`
 	}
-	if err := v.call(ctx, v.cfg.transitPath+"/decrypt/"+v.cfg.transitKey, token, in, &out); err != nil {
+	err = v.call(ctx, v.cfg.transitPath+"/decrypt/"+v.cfg.transitKey, token, in, &out)
+	var se *statusError
+	if errors.As(err, &se) && se.code == http.StatusForbidden {
+		// The kept token was revoked or outlived: one fresh login, one retry.
+		if token, err = v.tokenFor(ctx, true); err != nil {
+			return nil, err
+		}
+		err = v.call(ctx, v.cfg.transitPath+"/decrypt/"+v.cfg.transitKey, token, in, &out)
+	}
+	if err != nil {
 		return nil, err
 	}
 	if len(out.Data.BatchResults) != len(stored) {
