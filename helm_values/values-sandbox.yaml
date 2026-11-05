@@ -1,16 +1,27 @@
+# The yarilo stand: yarilo-postfix's MySQL table dkim, private keys as Vault
+# Transit ciphertext in private_key_enc, Vault in namespace vault over TLS
+# from the stand's internal CA (seconddns/k8s_vault). Installed with helm
+# upgrade in yarilo-relay; the DSN Secret is made once from yarilo-mysql (README).
 # The stand runs what develop built last.
 image:
   repository: ghcr.io/yarilomail/dkim-milter
   tag: "develop"
   pullPolicy: Always
 
-# The yarilo stand: yarilo-postfix's MySQL table dkim, keys in the clear in
-# private_key, as OpenDKIM reads them today.
 db:
   driver: mysql
   dsnSecret:
     name: dkim-milter-db
     key: DB_DSN
-  query: "SELECT domain, selector, private_key FROM dkim"
+  query: "SELECT domain, selector, private_key_enc FROM dkim"
 
-keyDecrypt: none
+keyDecrypt: vault
+
+vault:
+  addr: "https://vault.vault.svc:8200"
+  role: dkim-milter
+  caCertSecret: dkim-milter-vault-ca
+  caCertificate:
+    issuerRef:
+      name: yarilo-internal-ca
+      kind: Issuer

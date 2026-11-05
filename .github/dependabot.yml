@@ -32,7 +32,7 @@ updates:
     labels:
       - dependencies
     open-pull-requests-limit: 5
-    # Go stays on 1.26 until all yarilo repositories move together.
+    # Go stays on 1.27 until all yarilo repositories move together.
     ignore:
       - dependency-name: golang
         update-types: ["version-update:semver-minor", "version-update:semver-major"]

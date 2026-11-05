@@ -42,6 +42,12 @@ vault:
   transitKey: dkim
   # Secret with ca.crt when Vault's certificate is not from a public CA.
   caCertSecret: ""
+  # With an issuer named, the chart makes a Certificate that writes
+  # caCertSecret, so ca.crt is the issuing CA's: one that also signed Vault's.
+  caCertificate:
+    issuerRef:
+      name: ""
+      kind: Issuer
 
 # debug for one line per message with every step
 logLevel: ""
