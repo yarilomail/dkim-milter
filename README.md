@@ -125,11 +125,12 @@ The stand installs it with `helm upgrade` in `yarilo-relay`, beside yarilo-postf
 
 ### The stand
 
-The stand's Vault (seconddns/k8s_vault, namespace `vault`) is signed by the Issuer `yarilo-internal-ca`, which also exists in `yarilo-relay`; the chart's Certificate `dkim-milter-vault-ca` takes its `ca.crt` from there. The DSN Secret is made once from yarilo-postfix's:
+The stand's Vault (seconddns/k8s_vault, namespace `vault`) is signed by the Issuer `yarilo-internal-ca`, which also exists in `yarilo-relay`; the chart's Certificate `dkim-milter-vault-ca` takes its `ca.crt` from there. The DSN Secret is made once from the parts of yarilo-postfix's `yarilo-mysql`, with the host OpenDKIM uses (that Secret's own `dsn` key names a host that no longer resolves):
 
 ```sh
+g() { kubectl -n yarilo-relay get secret yarilo-mysql -o jsonpath="{.data.$1}" | base64 -d; }
 kubectl -n yarilo-relay create secret generic dkim-milter-db \
-  --from-literal=DB_DSN="$(kubectl -n yarilo-relay get secret yarilo-mysql -o jsonpath='{.data.dsn}' | base64 -d)"
+  --from-literal=DB_DSN="$(g MYSQL_USER):$(g MYSQL_PASSWORD)@tcp(mysql.db.svc.cluster.local:3306)/$(g MYSQL_DATABASE)?parseTime=true&charset=utf8mb4"
 helm upgrade --install dkim-milter helm -n yarilo-relay -f helm_values/values-sandbox.yaml
 ```
 
