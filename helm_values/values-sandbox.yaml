@@ -1,5 +1,6 @@
+# The stand runs what develop built last.
 image:
-  tag: "latest"
+  tag: "develop"
 
 # The yarilo stand: yarilo-postfix's MySQL table dkim, keys in the clear in
 # private_key, as OpenDKIM reads them today.

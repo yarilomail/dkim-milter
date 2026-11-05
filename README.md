@@ -130,4 +130,7 @@ kubectl create secret generic dkim-milter-db -n <namespace> \
 
 ## Build and release
 
-`app/go`, Go 1.27. `go test ./...` covers signing and verification for RSA and Ed25519, the From oversigning, key parsing, reloads, Vault Transit and a full milter conversation. Bumping `appVersion` in `helm/Chart.yaml` makes CI create the GitHub release and the versioned image tag on GHCR and Docker Hub.
+`app/go`, Go 1.27. `go test ./...` covers signing and verification for RSA and Ed25519, the From oversigning, key parsing, reloads, Vault Transit and a full milter conversation. Work lands on `develop` through pull requests; `main` takes releases only. Both branches accept changes by pull request alone, with Lint and Test green, no force-push and no deletion.
+
+- `develop` carries `-dev.N` in `helm/Chart.yaml` (both `version` and `appVersion`, bumped in the PR that changes the image). Each merge builds the image tagged with the commit, `develop` and the `-dev.N` version.
+- A merge of `develop` into `main` with a release version builds the image tagged with the commit, `latest` and `v<version>`, and creates the GitHub release with notes from git-cliff.

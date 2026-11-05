@@ -3,18 +3,18 @@ name: CI — dkim-milter
 on:
   push:
     branches:
+      - develop
       - main
     paths:
       - "app/**"
       - "helm/**"
       - ".github/workflows/ci.yaml"
   workflow_dispatch:
+  # No path filter: Lint and Test are required checks, so every PR must get them.
   pull_request:
     branches:
+      - develop
       - main
-    paths:
-      - "app/**"
-      - "helm/**"
 
 env:
   REGISTRY: ghcr.io
@@ -106,11 +106,12 @@ jobs:
         run: |
           APP_VERSION=$(awk '/^appVersion:/{gsub(/"/, ""); print $2}' helm/Chart.yaml)
           RELEASE_TAG="v${APP_VERSION}"
-          if git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | grep -q "${RELEASE_TAG}"; then
-            IS_RELEASE=false
-          else
+          # Releases come from main only; develop builds carry the -dev.N version as a tag.
+          IS_RELEASE=false
+          if [ "${GITHUB_REF_NAME}" = main ] && ! git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | grep -q "${RELEASE_TAG}"; then
             IS_RELEASE=true
           fi
+          echo "app_version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           echo "is_release=${IS_RELEASE}" >> "$GITHUB_OUTPUT"
 
@@ -140,7 +141,9 @@ jobs:
             ${{ env.DOCKERHUB_IMAGE }}
           tags: |
             type=sha,prefix=,format=short
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.ref_name == 'main' }}
+            type=raw,value=develop,enable=${{ github.ref_name == 'develop' }}
+            type=raw,value=${{ steps.version.outputs.app_version }},enable=${{ github.ref_name == 'develop' }}
             type=raw,value=${{ steps.version.outputs.tag }},enable=${{ steps.version.outputs.is_release == 'true' }}
 
       - name: Build and push
@@ -178,38 +181,8 @@ jobs:
             --title "${{ steps.version.outputs.tag }}" \
             --notes-file RELEASE_NOTES.md
 
-      - name: Update image tag in values
-        run: |
-          set -e
-          SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          for attempt in 1 2 3 4 5; do
-            git fetch origin main
-            git reset --hard origin/main
-
-            sed -i "s/^  tag: .*/  tag: \"${SHA}\"/" helm_values/values-sandbox.yaml
-            git add helm_values/values-sandbox.yaml
-
-            if git diff --cached --quiet; then
-              echo "Values already at ${SHA}, nothing to commit"
-              exit 0
-            fi
-
-            git commit -m "ci: update dkim-milter image tag to ${SHA} [skip ci]"
-
-            if git push; then
-              echo "Push succeeded on attempt ${attempt}"
-              exit 0
-            fi
-            echo "Push attempt ${attempt} failed, retrying"
-            sleep $((attempt * 2))
-          done
-          echo "Push failed after 5 attempts"
-          exit 1
-
       - name: Update Docker Hub description
+        if: github.ref_name == 'main'
         uses: peter-evans/dockerhub-description@v5
         with:
           username: 0kaba0
