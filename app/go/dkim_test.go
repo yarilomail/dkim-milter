@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/0kaba0hub/go-milter"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/emersion/go-msgauth/dkim"
 )
 
@@ -529,6 +530,9 @@ func TestMilterSignsThroughTheProtocol(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = sess.Close() }()
+			if err := sess.Macros(milter.CodeMail, "{auth_authen}", "user@"+fromDomain(tc.from)); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := sess.Mail("<alice@example.org>", nil); err != nil {
 				t.Fatal(err)
 			}
@@ -607,7 +611,7 @@ func TestQueueIDFromTheEndOfData(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = sess.Close() }()
-	if err := sess.Macros(milter.CodeMail, "{mail_addr}", "alice@example.org"); err != nil {
+	if err := sess.Macros(milter.CodeMail, "{mail_addr}", "alice@example.org", "{auth_authen}", "alice@example.org"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := sess.Mail("<alice@example.org>", nil); err != nil {
@@ -739,6 +743,9 @@ func TestMilterTempfailsAnUncachedDomainWhenVaultIsDown(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = sess.Close() }()
+			if err := sess.Macros(milter.CodeMail, "{auth_authen}", tc.from); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := sess.Mail("<"+tc.from+">", nil); err != nil {
 				t.Fatal(err)
 			}
@@ -976,5 +983,104 @@ func TestChartDefaultsMatchTheCode(t *testing.T) {
 		if !wire.Match(tmpl) {
 			t.Errorf("deployment.yaml does not pass %s as %s", tc.value, tc.env)
 		}
+	}
+}
+
+// A key is used only for a client that logged in as a user of the From
+// domain, or as a trusted login; anyone else's mail passes unsigned, counted
+// as unauthorized, and the key is not even looked up.
+func TestSigningNeedsAuthForTheFromDomain(t *testing.T) {
+	tb := &table{rows: map[string]row{"example.org": {"example.org", "s1", pkcs8PEM(t, edKey(t))}}}
+	c, _ := newTestCache(tb, plainKeys{}, 10)
+	ln, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newMilterServer(config{milterRead: time.Minute, milterWrite: time.Minute,
+		trusted: map[string]bool{"relay-submit": true, "ops@other.example": true}}, c)
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	for _, tc := range []struct {
+		name, auth string
+		signed     bool
+	}{
+		{"user of the domain", "bob@example.org", true},
+		{"user of the domain, other case", "Bob@Example.ORG", true},
+		{"trusted login", "relay-submit", true},
+		{"trusted login, other case", "Relay-Submit", true},
+		{"trusted login of another domain", "ops@other.example", true},
+		{"no login", "", false},
+		{"user of another domain", "mallory@evil.example", false},
+		{"subdomain user", "bob@sub.example.org", false},
+		{"domain as a suffix", "bob@notexample.org", false},
+		{"login without a domain", "bob", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := testutil.ToFloat64(signResults.WithLabelValues("unauthorized"))
+			queries := tb.count()
+			cl := milter.NewClientWithOptions("tcp", ln.Addr().String(), milter.ClientOptions{
+				ActionMask: milter.OptAddHeader, ProtocolMask: milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo,
+				ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second,
+			})
+			t.Cleanup(func() { _ = cl.Close() })
+			sess, err := cl.Session()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = sess.Close() }()
+			if tc.auth != "" {
+				if err := sess.Macros(milter.CodeMail, "{auth_authen}", tc.auth); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := sess.Mail("<alice@example.org>", nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sess.HeaderField("From", "alice@example.org"); err != nil {
+				t.Fatal(err)
+			}
+			act, err := sess.HeaderEnd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := act.Code == milter.ActContinue; got != tc.signed {
+				t.Fatalf("end of headers answered %c, signing = %v, want %v", act.Code, got, tc.signed)
+			}
+			unauth := testutil.ToFloat64(signResults.WithLabelValues("unauthorized")) - before
+			if tc.signed && unauth != 0 || !tc.signed && unauth != 1 {
+				t.Errorf("unauthorized counter moved by %v", unauth)
+			}
+			if !tc.signed && tb.count() != queries {
+				t.Error("the key was looked up for a client that may not use it")
+			}
+		})
+	}
+}
+
+// The login from one message does not carry into the next on the connection.
+func TestAuthDoesNotCarryOverToTheNextMessage(t *testing.T) {
+	s := &session{trusted: map[string]bool{}}
+	m := &milter.Modifier{Macros: map[string]string{"{auth_authen}": "bob@example.org"}}
+	_, _ = s.MailFrom("<bob@example.org>", m)
+	if !s.mayUse("example.org") {
+		t.Fatal("the logged-in user may not sign")
+	}
+	_, _ = s.MailFrom("<x@example.org>", &milter.Modifier{Macros: map[string]string{}})
+	if s.mayUse("example.org") {
+		t.Error("the previous message's login still signs")
+	}
+}
+
+// TRUSTED_AUTH_USERS: comma-separated, case and spaces ignored.
+func TestTrustedAuthUsersFromTheEnvironment(t *testing.T) {
+	t.Setenv("DB_DSN", "x")
+	t.Setenv("KEY_DECRYPT", "none")
+	t.Setenv("TRUSTED_AUTH_USERS", " Relay-Submit , ,ops@example.net")
+	c, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.trusted) != 2 || !c.trusted["relay-submit"] || !c.trusted["ops@example.net"] {
+		t.Errorf("trusted = %v", c.trusted)
 	}
 }

@@ -62,6 +62,10 @@ spec:
             - name: DKIM_SQL_QUERY
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.trustedAuthUsers }}
+            - name: TRUSTED_AUTH_USERS
+              value: {{ join "," . | quote }}
+            {{- end }}
             - name: KEY_DECRYPT
               value: {{ .Values.keyDecrypt | quote }}
             - name: KEY_CACHE_SIZE

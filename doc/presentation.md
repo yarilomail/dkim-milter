@@ -50,7 +50,7 @@ dkim-milter/
 
 | Part | What |
 |:---|:---|
-| milter session | collects headers and body, signs at end of message, inserts `DKIM-Signature` at the top |
+| milter session | signs only for a client logged in as a user of the From domain or as a `TRUSTED_AUTH_USERS` login; collects headers and body, signs at end of message, inserts `DKIM-Signature` at the top |
 | key cache | loads a domain's newest row on its first message, LRU of `KEY_CACHE_SIZE`; past the TTL the key signs on while the row is read again in the background; tempfail only for an uncached domain while the database or Vault is down |
 | Vault client | Kubernetes login with the ServiceAccount token, kept until four fifths of its TTL; one decrypt per load |
 | metrics | `/healthz`, `/readyz` (the key query runs and the token may decrypt), `/metrics` |
@@ -64,6 +64,7 @@ dkim-milter/
 | `DKIM_SQL_QUERY` | `SELECT domain, selector, private_key_enc FROM dkim WHERE lower(trim(domain)) = $1 ORDER BY created_at DESC, id DESC LIMIT 1` (`?` for mysql) | one domain's newest row |
 | `MILTER_READ_TIMEOUT_SECONDS` / `MILTER_WRITE_TIMEOUT_SECONDS` | `3600` / `60` | milter connection timeouts |
 | `KEY_DECRYPT` | `vault` | `vault` or `none` |
+| `TRUSTED_AUTH_USERS` | --- | logins that may have any domain signed |
 | `KEY_CACHE_SIZE` / `KEY_CACHE_TTL_SECONDS` / `KEY_CACHE_MISS_TTL_SECONDS` | `10000` / `600` / `60` | key cache |
 | `VAULT_ADDR` / `VAULT_ROLE` | --- | required with `vault` |
 | `VAULT_AUTH_PATH` / `VAULT_TRANSIT_PATH` / `VAULT_TRANSIT_KEY` | `kubernetes` / `transit` / `dkim` | mounts and key |
@@ -76,4 +77,4 @@ The stand installs the chart with `helm upgrade` in `yarilo-relay`, beside yaril
 
 ## Logging
 
-JSON on stdout, one line per message: `dkim: signed` with domain, selector and queue id, `dkim: not signed` with the reason (no From domain, no key, a key that would not sign), or `dkim: tempfail` when no key is cached and none can be read. Key loads, selector changes, refresh failures, tempfails, Vault failures and unusable keys are logged with the domain they concern.
+JSON on stdout, one line per message: `dkim: signed` with domain, selector and queue id, `dkim: not signed` with the reason (no From domain, a client that may not sign for it, no key, a key that would not sign), or `dkim: tempfail` when no key is cached and none can be read. Key loads, selector changes, refresh failures, tempfails, Vault failures and unusable keys are logged with the domain they concern.

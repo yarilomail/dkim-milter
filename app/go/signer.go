@@ -31,9 +31,13 @@ var signedHeaders = []string{
 // the headers and the body goes straight into it, so no body is held.
 type session struct {
 	keys    *keyCache
+	trusted map[string]bool
 	headers bytes.Buffer
 	from    string
 	queueID string
+	// authUser is the SASL login ({auth_authen}) of the client, empty when
+	// the client did not authenticate.
+	authUser string
 
 	signer *dkim.Signer
 	key    key
@@ -45,7 +49,7 @@ func (s *session) reset() {
 		_ = s.signer.Close()
 	}
 	s.headers.Reset()
-	s.from, s.queueID = "", ""
+	s.from, s.queueID, s.authUser = "", "", ""
 	s.signer, s.key, s.err = nil, key{}, nil
 }
 
@@ -57,11 +61,27 @@ func (s *session) Helo(string, *milter.Modifier) (milter.Response, error) {
 	return milter.RespContinue, nil
 }
 
-// MailFrom does not read the queue id: with smtpd_delay_open_until_valid_rcpt
-// Postfix has none until the first accepted RCPT.
-func (s *session) MailFrom(string, *milter.Modifier) (milter.Response, error) {
+// MailFrom keeps the SASL login, which Postfix sends with MAIL FROM. It does
+// not read the queue id: with smtpd_delay_open_until_valid_rcpt Postfix has
+// none until the first accepted RCPT.
+func (s *session) MailFrom(_ string, m *milter.Modifier) (milter.Response, error) {
 	s.reset()
+	s.authUser = strings.TrimSpace(m.Macros["{auth_authen}"])
 	return milter.RespContinue, nil
+}
+
+// mayUse says whether the client may have mail of domain signed: it logged
+// in as a user of that domain, or as one of TRUSTED_AUTH_USERS.
+func (s *session) mayUse(domain string) bool {
+	login := strings.ToLower(s.authUser)
+	if login == "" {
+		return false
+	}
+	if s.trusted[login] {
+		return true
+	}
+	at := strings.LastIndexByte(login, '@')
+	return at >= 0 && login[at+1:] == domain
 }
 
 func (s *session) RcptTo(string, *milter.Modifier) (milter.Response, error) {
@@ -88,6 +108,11 @@ func (s *session) Headers(_ textproto.MIMEHeader, m *milter.Modifier) (milter.Re
 	if domain == "" {
 		signResults.WithLabelValues("no_from").Inc()
 		log.Info("dkim: not signed, no From domain")
+		return milter.RespAccept, nil
+	}
+	if !s.mayUse(domain) {
+		signResults.WithLabelValues("unauthorized").Inc()
+		log.Warn("dkim: not signed, the client may not sign for the From domain", "auth_user", s.authUser)
 		return milter.RespAccept, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)

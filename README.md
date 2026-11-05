@@ -22,6 +22,12 @@ Licensed under **AGPLv3**, see [LICENSE](LICENSE).
 - The body is streamed into the signature as it arrives and never held, so memory does not grow with `message_size_limit`. A message that will not be signed is accepted at the end of its headers, and Postfix sends this milter no body for it.
 - A message it cannot sign (no `From` domain, no key for the domain, a signing error) is accepted unsigned with one log line; the milter never holds or refuses mail.
 
+## Who may have mail signed
+
+A key is used only when the client logged in with SASL and Postfix's `{auth_authen}` is a user of the `From:` domain (`bob@example.org` for `From: alice@example.org`; case ignored, a subdomain is another domain), or is one of `TRUSTED_AUTH_USERS`. Any other message (no login, a login of another domain, mail from a local `sendmail`) is accepted unsigned with the log line `dkim: not signed, the client may not sign for the From domain` and counted as `unauthorized`; its key is not even read. There is no setting to sign without a login: a signer that signs whatever reaches its port would sign for anyone who reaches Postfix.
+
+On the yarilo stand yarilo logs in to `relay-mta`'s submission listener as the sending user, and Postfix's `sasl_username` (hence `{auth_authen}`) is that user's address, e.g. `u51@d00002.test`. Postfix sends `{auth_authen}` with `MAIL FROM` by default (`milter_mail_macros`).
+
 ## Keys
 
 Rows in the table `dkim` ([schema/postgres.sql](schema/postgres.sql), [schema/mysql.sql](schema/mysql.sql)): `domain`, `selector`, `public_key`, `private_key_enc`, `created_at`. A domain may have one row per selector; its newest row signs (`ORDER BY created_at DESC, id DESC`), and the domain is compared without case and surrounding spaces, so `Example.ORG ` in the table still signs mail of `example.org`. With `KEY_DECRYPT=vault`, `private_key_enc` is the PEM private key encrypted with the Vault Transit key `dkim`: the database, its dumps and its backups hold ciphertext only, and the encryption key never leaves Vault.
@@ -97,6 +103,7 @@ milter_default_action = tempfail
 | `DKIM_SQL_QUERY` | `SELECT domain, selector, private_key_enc FROM dkim WHERE lower(trim(domain)) = $1 ORDER BY created_at DESC, id DESC LIMIT 1` (`?` for mysql) | one domain's row: domain, selector, stored private key; one placeholder, the lower-case domain |
 | `MILTER_READ_TIMEOUT_SECONDS` | `3600` | a milter connection silent this long is closed; Postfix keeps one per SMTP session and is silent on it while the client sends |
 | `MILTER_WRITE_TIMEOUT_SECONDS` | `60` | a reply Postfix does not take this long closes the connection |
+| `TRUSTED_AUTH_USERS` | --- | comma-separated SASL logins that may have any domain signed |
 | `KEY_DECRYPT` | `vault` | `vault`: the column is Vault Transit ciphertext; `none`: the column is PEM (logged as a warning) |
 | `KEY_CACHE_SIZE` | `10000` | keys held, least recently used dropped first |
 | `KEY_CACHE_TTL_SECONDS` | `600` | a cached key is read again after this |
@@ -116,7 +123,7 @@ Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selec
 
 | Metric | What |
 |:---|:---|
-| `dkim_messages_total{result}` | `signed`, `no_key`, `no_from`, `tempfail` (no key cached and none readable), `error` (a key that would not sign) |
+| `dkim_messages_total{result}` | `signed`, `no_key`, `no_from`, `unauthorized` (the login may not sign for the From domain), `tempfail` (no key cached and none readable), `error` (a key that would not sign) |
 | `dkim_keys_loaded` | domains with a key in the cache |
 | `dkim_key_cache_lookups_total{result}` | `hit`, `negative_hit` (cached as keyless), `stale` (past its TTL, served while read again), `miss` |
 | `dkim_key_fetch_errors_total{stage}` | `db`, `vault`, `parse` |
@@ -136,6 +143,7 @@ Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selec
 | `db.query` | --- (the driver's default) | as `DKIM_SQL_QUERY` |
 | `db.maxOpenConns` | `10` | as `DB_MAX_OPEN_CONNS` |
 | `keyDecrypt` | `vault` | `vault` or `none` |
+| `trustedAuthUsers` | `[]` | as `TRUSTED_AUTH_USERS` |
 | `keyCache.size` / `.ttlSeconds` / `.missTtlSeconds` | `10000` / `600` / `60` | as `KEY_CACHE_SIZE`, `KEY_CACHE_TTL_SECONDS`, `KEY_CACHE_MISS_TTL_SECONDS` |
 | `resources.limits.memory` | `128Mi` | room for `keyCache.size` keys, see Keys |
 | `vault.addr`, `vault.role` | --- | required with `vault` |
@@ -167,6 +175,8 @@ and for PostgreSQL:
 ALTER TABLE dkim ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS dkim_domain_lookup ON dkim (lower(trim(domain)), created_at DESC, id DESC);
 DROP INDEX IF EXISTS dkim_domain;
+UPDATE dkim SET domain = lower(trim(domain)) WHERE domain <> lower(trim(domain));
+ALTER TABLE dkim ADD CONSTRAINT dkim_domain_normalized CHECK (domain = lower(trim(domain)));
 ```
 
 Run it before the new image: until then the new pod's key query fails and it stays not ready, while the old pod keeps signing.
@@ -191,7 +201,7 @@ kubectl create secret generic dkim-milter-db -n <namespace> \
 
 ## Build and release
 
-`app/go`, Go 1.27. `go test ./...` covers signing and verification for RSA and Ed25519, the From oversigning, key parsing, the key cache (hits, shared misses, the expired key served while it is read again, selector rotation, keyless domains, eviction, a failed refresh of an evicted entry, Vault or the database down), Vault Transit with its kept token and the decrypt check, readiness on the key query, the milter read timeout, the chart's defaults against the code's, and a full milter conversation. Work lands on `develop` through pull requests; `main` takes releases only. Both branches accept changes by pull request alone, with Lint and Test green, no force-push and no deletion.
+`app/go`, Go 1.27. `go test ./...` covers signing and verification for RSA and Ed25519, the From oversigning, key parsing, who may have mail signed (the login's domain, trusted logins, no login), the key cache (hits, shared misses, the expired key served while it is read again, selector rotation, keyless domains, eviction, a failed refresh of an evicted entry, Vault or the database down), Vault Transit with its kept token and the decrypt check, readiness on the key query, the milter read timeout, the chart's defaults against the code's, and a full milter conversation. Work lands on `develop` through pull requests; `main` takes releases only. Both branches accept changes by pull request alone, with Lint and Test green, no force-push and no deletion.
 
 - `develop` carries `-dev.N` in `helm/Chart.yaml` (both `version` and `appVersion`, bumped in the PR that changes the image). Each merge builds the image tagged with the commit, `develop` and the `-dev.N` version.
 - A merge of `develop` into `main` with a release version builds the image tagged with the commit, `latest` and `v<version>`, and creates the GitHub release with notes from git-cliff.

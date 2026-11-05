@@ -41,6 +41,9 @@ type config struct {
 
 	milterRead  time.Duration
 	milterWrite time.Duration
+
+	// trusted are SASL logins that may sign any domain in the table.
+	trusted map[string]bool
 }
 
 // defaultQueries read one domain's newest row, the domain compared without
@@ -119,6 +122,12 @@ func loadConfig() (config, error) {
 		return c, err
 	}
 	c.milterRead, c.milterWrite = time.Duration(read)*time.Second, time.Duration(write)*time.Second
+	c.trusted = map[string]bool{}
+	for _, u := range strings.Split(os.Getenv("TRUSTED_AUTH_USERS"), ",") {
+		if u = strings.ToLower(strings.TrimSpace(u)); u != "" {
+			c.trusted[u] = true
+		}
+	}
 	def, ok := defaultQueries[c.dbDriver]
 	if !ok {
 		return c, fmt.Errorf("config: DB_DRIVER %q: postgres or mysql", c.dbDriver)
