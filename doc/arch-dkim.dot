@@ -1,0 +1,16 @@
+digraph dkim {
+  rankdir=LR; node [shape=box, fontname="Helvetica", fontsize=11]; edge [fontname="Helvetica", fontsize=9];
+  client [label="mail client\n(submission 587)"];
+  postfix [label="Postfix relay-mta"];
+  mf [label="mailfrom-milter\nFrom = envelope sender"];
+  dk [label="dkim-milter\nsign with the From domain key"];
+  db [label="PostgreSQL / MySQL\ntable dkim\n(private_key_enc)", shape=cylinder];
+  vault [label="Vault Transit\nkey dkim", shape=box3d];
+  out [label="recipient MX"];
+  client -> postfix [label="SMTP AUTH"];
+  postfix -> mf [label="milter"];
+  postfix -> dk [label="milter"];
+  dk -> db [label="read keys\nevery 60 s"];
+  dk -> vault [label="decrypt new rows\n(k8s auth)"];
+  postfix -> out [label="signed message"];
+}

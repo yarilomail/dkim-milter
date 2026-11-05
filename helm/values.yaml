@@ -1,0 +1,57 @@
+image:
+  # Docker Hub keeps every release tag; GHCR is the pruned CI working set.
+  repository: docker.io/0kaba0/dkim-milter
+  # Empty: the chart's appVersion, the image this chart was released with.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Stateless: every replica loads the same keys.
+replicaCount: 1
+
+# Milter port; Postfix points smtpd_milters / non_smtpd_milters at it.
+milterPort: 8891
+
+# /healthz, /readyz (ready once the keys are loaded), /metrics
+metricsPort: 8081
+
+db:
+  # postgres or mysql
+  driver: postgres
+  # Secret holding the DSN: postgres://user:pass@host:5432/db?sslmode=...
+  # or, for mysql, user:pass@tcp(host:3306)/db
+  dsnSecret:
+    name: ""
+    key: DB_DSN
+  # Three columns: domain, selector, the stored private key.
+  query: "SELECT domain, selector, private_key_enc FROM dkim"
+
+# vault: the column holds Vault Transit ciphertext; none: the column holds PEM.
+keyDecrypt: vault
+
+# Seconds between key reloads; 0 loads once at start.
+keyReloadSeconds: 60
+
+vault:
+  addr: ""
+  # Kubernetes auth role bound to this release's ServiceAccount dkim-milter.
+  role: ""
+  authPath: kubernetes
+  transitPath: transit
+  transitKey: dkim
+  # Secret with ca.crt when Vault's certificate is not from a public CA.
+  caCertSecret: ""
+
+# debug for one line per message with every step
+logLevel: ""
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 64Mi
+
+nodeSelector: {}
