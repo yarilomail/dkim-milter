@@ -52,9 +52,10 @@ func (s *session) Helo(string, *milter.Modifier) (milter.Response, error) {
 	return milter.RespContinue, nil
 }
 
-func (s *session) MailFrom(_ string, m *milter.Modifier) (milter.Response, error) {
+// MailFrom does not read the queue id: with smtpd_delay_open_until_valid_rcpt
+// Postfix has none until the first accepted RCPT.
+func (s *session) MailFrom(string, *milter.Modifier) (milter.Response, error) {
 	s.reset()
-	s.queueID = m.Macros["i"]
 	return milter.RespContinue, nil
 }
 
@@ -75,7 +76,8 @@ func (s *session) Header(name, value string, _ *milter.Modifier) (milter.Respons
 
 // Headers picks the key; a message that will not be signed is accepted here,
 // so the MTA sends this milter no body for it.
-func (s *session) Headers(textproto.MIMEHeader, *milter.Modifier) (milter.Response, error) {
+func (s *session) Headers(_ textproto.MIMEHeader, m *milter.Modifier) (milter.Response, error) {
+	s.queueID = m.Macros["i"]
 	domain := fromDomain(s.from)
 	log := slog.With("queue_id", s.queueID, "domain", domain)
 	if domain == "" {
@@ -112,6 +114,9 @@ func (s *session) BodyChunk(chunk []byte, _ *milter.Modifier) (milter.Response, 
 // unsigned, never held.
 func (s *session) Body(m *milter.Modifier) (milter.Response, error) {
 	defer s.reset()
+	if q := m.Macros["i"]; q != "" {
+		s.queueID = q
+	}
 	log := slog.With("queue_id", s.queueID, "domain", s.key.domain)
 	if s.signer == nil {
 		return milter.RespAccept, nil
