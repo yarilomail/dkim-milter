@@ -1,0 +1,13 @@
+image:
+  tag: "latest"
+
+# The yarilo stand: yarilo-postfix's MySQL table dkim, keys in the clear in
+# private_key, as OpenDKIM reads them today.
+db:
+  driver: mysql
+  dsnSecret:
+    name: dkim-milter-db
+    key: DB_DSN
+  query: "SELECT domain, selector, private_key FROM dkim"
+
+keyDecrypt: none

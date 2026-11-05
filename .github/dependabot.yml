@@ -1,0 +1,38 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /app/go
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    labels:
+      - dependencies
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    labels:
+      - dependencies
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: docker
+    directory: /app/go
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    labels:
+      - dependencies
+    open-pull-requests-limit: 5
+    # Go stays on 1.26 until all yarilo repositories move together.
+    ignore:
+      - dependency-name: golang
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]

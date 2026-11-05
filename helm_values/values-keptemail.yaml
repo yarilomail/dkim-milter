@@ -1,0 +1,13 @@
+# keptemail: PostgreSQL in namespace postgres, keys encrypted with the Vault
+# Transit key dkim.
+db:
+  driver: postgres
+  dsnSecret:
+    name: dkim-milter-db
+    key: DB_DSN
+
+keyDecrypt: vault
+
+vault:
+  addr: "http://vault.vault.svc:8200"
+  role: dkim-milter
