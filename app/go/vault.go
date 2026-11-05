@@ -27,7 +27,7 @@ type vaultTransit struct {
 
 	mu      sync.Mutex
 	token   string
-	expires time.Time
+	expires time.Time // zero: the token does not expire
 }
 
 // statusError is a Vault answer other than 200.
@@ -90,7 +90,7 @@ func (v *vaultTransit) call(ctx context.Context, path, token string, in, out any
 func (v *vaultTransit) tokenFor(ctx context.Context, fresh bool) (string, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if !fresh && v.token != "" && v.now().Before(v.expires) {
+	if !fresh && v.token != "" && (v.expires.IsZero() || v.now().Before(v.expires)) {
 		return v.token, nil
 	}
 	tok, ttl, err := v.login(ctx)
@@ -99,14 +99,33 @@ func (v *vaultTransit) tokenFor(ctx context.Context, fresh bool) (string, error)
 		return "", err
 	}
 	// Renew at four fifths of the TTL, so a token never runs out mid-request.
-	v.token, v.expires = tok, v.now().Add(ttl*4/5)
+	// A lease of 0 is a token without a TTL: kept until a 403.
+	v.token, v.expires = tok, time.Time{}
+	if ttl > 0 {
+		v.expires = v.now().Add(ttl * 4 / 5)
+	}
 	return tok, nil
 }
 
-// Check logs in: /readyz waits for one success.
+// Check logs in and asks Vault whether the token may decrypt with the
+// Transit key: /readyz waits for both.
 func (v *vaultTransit) Check(ctx context.Context) error {
-	_, err := v.tokenFor(ctx, false)
-	return err
+	token, err := v.tokenFor(ctx, false)
+	if err != nil {
+		return err
+	}
+	path := v.cfg.transitPath + "/decrypt/" + v.cfg.transitKey
+	var out map[string]any
+	if err := v.call(ctx, "sys/capabilities-self", token, map[string][]string{"paths": {path}}, &out); err != nil {
+		return err
+	}
+	caps, _ := out[path].([]any)
+	for _, c := range caps {
+		if c == "update" || c == "root" {
+			return nil
+		}
+	}
+	return fmt.Errorf("vault: the token may not decrypt: capabilities on %s are %v, update is needed", path, caps)
 }
 
 func (v *vaultTransit) login(ctx context.Context) (string, time.Duration, error) {

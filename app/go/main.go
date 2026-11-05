@@ -44,7 +44,8 @@ func openDB(cfg config) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("db: open %s: %w", cfg.dbDriver, err)
 	}
-	db.SetMaxOpenConns(2)
+	db.SetMaxOpenConns(cfg.dbMaxOpen)
+	db.SetMaxIdleConns(cfg.dbMaxOpen)
 	db.SetConnMaxIdleTime(5 * time.Minute)
 	return db, nil
 }
@@ -60,12 +61,16 @@ func newDecryptor(cfg config) (decryptor, error) {
 // checker is a decryptor that can say whether it is reachable.
 type checker interface{ Check(context.Context) error }
 
-// waitReady sets ready once the database answers and, with Vault, one login
-// succeeds; keys load on demand after that.
-func waitReady(ctx context.Context, db *sql.DB, dec decryptor, ready *atomic.Bool) {
+// readyProbeDomain is looked up by waitReady: no row has it, so the key
+// query answers with no row once it runs.
+const readyProbeDomain = "readiness-probe.invalid"
+
+// waitReady sets ready once the key query runs and, with Vault, the token
+// may decrypt with the Transit key; keys load on demand after that.
+func waitReady(ctx context.Context, fetch func(context.Context, string) (row, bool, error), dec decryptor, ready *atomic.Bool) {
 	backoff := time.Second
 	for {
-		err := db.PingContext(ctx)
+		_, _, err := fetch(ctx, readyProbeDomain)
 		if c, ok := dec.(checker); ok && err == nil {
 			err = c.Check(ctx)
 		}
@@ -84,6 +89,20 @@ func waitReady(ctx context.Context, db *sql.DB, dec decryptor, ready *atomic.Boo
 	}
 }
 
+// newMilterServer is the milter listener's server: one session per
+// connection, adding only the signature header.
+func newMilterServer(cfg config, cache *keyCache) *milter.Server {
+	return &milter.Server{
+		NewMilter: func() milter.Milter { return &session{keys: cache} },
+		Actions:   milter.OptAddHeader,
+		Protocol:  milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo,
+		// Bounds a connection that stops talking; the library also refuses
+		// packets over 1 MiB, so a peer cannot make it allocate more.
+		ReadTimeout:  cfg.milterRead,
+		WriteTimeout: cfg.milterWrite,
+	}
+}
+
 func run() error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -98,12 +117,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	cache := newKeyCache(sqlRow(db, cfg.query), dec, cfg.cacheSize, cfg.cacheTTL, cfg.cacheMissTTL)
+	fetch := sqlRow(db, cfg.query)
+	cache := newKeyCache(fetch, dec, cfg.cacheSize, cfg.cacheTTL, cfg.cacheMissTTL)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	var ready atomic.Bool
-	go waitReady(ctx, db, dec, &ready)
+	go waitReady(ctx, fetch, dec, &ready)
 
 	hs := &http.Server{Addr: cfg.metricsAddr, Handler: metricsMux(ready.Load), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
@@ -116,12 +136,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("milter: listen %s: %w", cfg.listenAddr, err)
 	}
-	srv := &milter.Server{
-		NewMilter: func() milter.Milter { return &session{keys: cache} },
-		Actions:   milter.OptAddHeader,
-		Protocol:  milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo,
-	}
+	srv := newMilterServer(cfg, cache)
 	slog.Info("dkim-milter: listening", "addr", cfg.listenAddr, "db", cfg.dbDriver, "decrypt", cfg.decrypt,
+		"db_max_open", cfg.dbMaxOpen, "read_timeout", cfg.milterRead.String(),
 		"cache_size", cfg.cacheSize, "cache_ttl", cfg.cacheTTL.String(), "miss_ttl", cfg.cacheMissTTL.String())
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()

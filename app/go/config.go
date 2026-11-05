@@ -14,16 +14,23 @@ const (
 	defaultCacheSize    = 10000
 	defaultCacheTTL     = 600
 	defaultCacheMissTTL = 60
-	defaultSATokenFile  = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	defaultDBMaxOpen    = 10
+	// Postfix keeps one milter connection for a whole SMTP session and is
+	// silent on it while the client sends, so the read timeout outlasts any
+	// session; it only frees connections that nobody will use again.
+	defaultMilterRead  = 3600
+	defaultMilterWrite = 60
+	defaultSATokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 )
 
 type config struct {
 	listenAddr  string
 	metricsAddr string
 
-	dbDriver string // postgres | mysql
-	dbDSN    string
-	query    string
+	dbDriver  string // postgres | mysql
+	dbDSN     string
+	dbMaxOpen int
+	query     string
 
 	decrypt string // vault | none
 	vault   vaultConfig
@@ -31,12 +38,17 @@ type config struct {
 	cacheSize    int
 	cacheTTL     time.Duration
 	cacheMissTTL time.Duration
+
+	milterRead  time.Duration
+	milterWrite time.Duration
 }
 
-// defaultQueries read one domain's row; the placeholder is the driver's.
+// defaultQueries read one domain's newest row, the domain compared without
+// case and surrounding spaces; the placeholder is the driver's. The schema's
+// index is on the same expression.
 var defaultQueries = map[string]string{
-	"postgres": "SELECT domain, selector, private_key_enc FROM dkim WHERE domain = $1",
-	"mysql":    "SELECT domain, selector, private_key_enc FROM dkim WHERE domain = ?",
+	"postgres": "SELECT domain, selector, private_key_enc FROM dkim WHERE lower(trim(domain)) = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
+	"mysql":    "SELECT domain, selector, private_key_enc FROM dkim WHERE lower(trim(domain)) = ? ORDER BY created_at DESC, id DESC LIMIT 1",
 }
 
 // positive reads a whole number above zero.
@@ -95,6 +107,18 @@ func loadConfig() (config, error) {
 		return c, err
 	}
 	c.cacheTTL, c.cacheMissTTL = time.Duration(ttl)*time.Second, time.Duration(miss)*time.Second
+	if c.dbMaxOpen, err = positive("DB_MAX_OPEN_CONNS", defaultDBMaxOpen); err != nil {
+		return c, err
+	}
+	read, err := positive("MILTER_READ_TIMEOUT_SECONDS", defaultMilterRead)
+	if err != nil {
+		return c, err
+	}
+	write, err := positive("MILTER_WRITE_TIMEOUT_SECONDS", defaultMilterWrite)
+	if err != nil {
+		return c, err
+	}
+	c.milterRead, c.milterWrite = time.Duration(read)*time.Second, time.Duration(write)*time.Second
 	def, ok := defaultQueries[c.dbDriver]
 	if !ok {
 		return c, fmt.Errorf("config: DB_DRIVER %q: postgres or mysql", c.dbDriver)

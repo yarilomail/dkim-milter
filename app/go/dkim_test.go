@@ -192,9 +192,14 @@ type table struct {
 	rows    map[string]row
 	queries int
 	fail    bool
+	// gate, when set before the cache is used, holds every query until it closes.
+	gate chan struct{}
 }
 
 func (tb *table) fetch(_ context.Context, domain string) (row, bool, error) {
+	if tb.gate != nil {
+		<-tb.gate
+	}
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 	tb.queries++
@@ -258,8 +263,9 @@ func TestKeyCacheSingleflight(t *testing.T) {
 	}
 }
 
-// After the TTL the row is read again: a new selector shows, an unchanged
-// row is not decrypted again.
+// Past the TTL the cached key is served at once and the row is read again
+// in the background: a new selector shows then, an unchanged row is not
+// decrypted again.
 func TestKeyCacheTTLAndRotation(t *testing.T) {
 	k1 := pkcs8PEM(t, edKey(t))
 	tb := &table{rows: map[string]row{"a.example": {"a.example", "s1", k1}}}
@@ -267,16 +273,53 @@ func TestKeyCacheTTLAndRotation(t *testing.T) {
 	c, ck := newTestCache(tb, dec, 10)
 	_, _, _ = c.lookup(t.Context(), "a.example")
 	ck.add(11 * time.Minute)
-	if k, _, _ := c.lookup(t.Context(), "a.example"); k.selector != "s1" || tb.count() != 2 || dec.calls.Load() != 1 {
-		t.Errorf("unchanged row after TTL: selector %q, %d queries, %d decrypts; want s1, 2, 1", k.selector, tb.count(), dec.calls.Load())
+	if k, _, _ := c.lookup(t.Context(), "a.example"); k.selector != "s1" {
+		t.Errorf("past the TTL: selector %q, want the cached s1", k.selector)
+	}
+	c.bg.Wait()
+	if tb.count() != 2 || dec.calls.Load() != 1 {
+		t.Errorf("unchanged row after TTL: %d queries, %d decrypts; want 2, 1", tb.count(), dec.calls.Load())
 	}
 	tb.set("a.example", row{"a.example", "s2", pkcs8PEM(t, edKey(t))})
 	if k, _, _ := c.lookup(t.Context(), "a.example"); k.selector != "s1" {
 		t.Errorf("rotation visible before the TTL: %q", k.selector)
 	}
 	ck.add(11 * time.Minute)
+	if k, _, _ := c.lookup(t.Context(), "a.example"); k.selector != "s1" {
+		t.Errorf("the lookup that starts the refresh: %q, want s1 served meanwhile", k.selector)
+	}
+	c.bg.Wait()
 	if k, _, _ := c.lookup(t.Context(), "a.example"); k.selector != "s2" || dec.calls.Load() != 2 {
-		t.Errorf("after the TTL: selector %q, %d decrypts; want s2, 2", k.selector, dec.calls.Load())
+		t.Errorf("after the refresh: selector %q, %d decrypts; want s2, 2", k.selector, dec.calls.Load())
+	}
+}
+
+// A message never waits on a refresh: with the database hanging, an expired
+// key is served at once, and many such lookups start one query.
+func TestKeyCacheStaleDoesNotWaitOnTheDatabase(t *testing.T) {
+	tb := &table{rows: map[string]row{"a.example": {"a.example", "s1", pkcs8PEM(t, edKey(t))}}}
+	c, ck := newTestCache(tb, &countingDecryptor{}, 10)
+	_, _, _ = c.lookup(t.Context(), "a.example")
+	ck.add(11 * time.Minute)
+	tb.gate = make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 20; i++ {
+			if k, ok, err := c.lookup(t.Context(), "a.example"); err != nil || !ok || k.selector != "s1" {
+				t.Errorf("lookup %d: %+v %v %v", i, k, ok, err)
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("lookups of an expired key waited on the database")
+	}
+	close(tb.gate)
+	c.bg.Wait()
+	if tb.count() != 2 {
+		t.Errorf("20 lookups past the TTL: %d queries in all, want 2 (the first load and one refresh)", tb.count())
 	}
 }
 
@@ -294,8 +337,41 @@ func TestKeyCacheNegative(t *testing.T) {
 	}
 	tb.set("none.example", row{"none.example", "s1", pkcs8PEM(t, edKey(t))})
 	ck.add(61 * time.Second)
+	_, _, _ = c.lookup(t.Context(), "none.example")
+	c.bg.Wait()
 	if _, ok, _ := c.lookup(t.Context(), "none.example"); !ok {
 		t.Error("a row added after the miss TTL is not seen")
+	}
+}
+
+// A refresh that fails after its entry was evicted puts the entry back:
+// the key keeps signing instead of the domain going to tempfail.
+func TestKeyCacheFailedRefreshOfAnEvictedEntry(t *testing.T) {
+	tb := &table{rows: map[string]row{
+		"a.example": {"a.example", "s1", pkcs8PEM(t, edKey(t))},
+		"b.example": {"b.example", "s1", pkcs8PEM(t, edKey(t))},
+	}}
+	dec := &countingDecryptor{}
+	c, ck := newTestCache(tb, dec, 1)
+	_, _, _ = c.lookup(t.Context(), "a.example")
+	ck.add(11 * time.Minute)
+	dec.fail.Store(true)
+	tb.set("a.example", row{"a.example", "s2", pkcs8PEM(t, edKey(t))}) // the refresh must decrypt, and fails
+	tb.gate = make(chan struct{})
+	_, _, _ = c.lookup(t.Context(), "a.example") // starts the refresh, held at the query
+	c.mu.Lock()
+	c.drop(c.entries["a.example"]) // evicted while the refresh runs
+	c.mu.Unlock()
+	close(tb.gate)
+	c.bg.Wait()
+	tb.mu.Lock()
+	tb.fail = true
+	tb.mu.Unlock()
+	if k, ok, err := c.lookup(t.Context(), "a.example"); err != nil || !ok || k.selector != "s1" {
+		t.Errorf("after a failed refresh of an evicted entry: %+v %v %v, want the cached s1", k, ok, err)
+	}
+	if c.withKey != 1 || len(c.entries) != 1 {
+		t.Errorf("%d keys counted, %d entries; want 1 and 1", c.withKey, len(c.entries))
 	}
 }
 
@@ -326,6 +402,12 @@ func TestKeyCacheUnavailable(t *testing.T) {
 			if _, ok, err := c.lookup(t.Context(), "keyless.example"); err != nil || ok {
 				t.Errorf("keyless domain past its miss TTL: %v %v, want keyless, not unavailable", ok, err)
 			}
+			c.bg.Wait()
+			ck.add(11 * time.Minute)
+			if k, ok, err := c.lookup(t.Context(), "cached.example"); err != nil || !ok || k.selector != "s1" {
+				t.Errorf("cached domain after a failed refresh: %+v %v %v, want the cached key", k, ok, err)
+			}
+			c.bg.Wait()
 		})
 	}
 }
@@ -674,25 +756,225 @@ func TestMilterTempfailsAnUncachedDomainWhenVaultIsDown(t *testing.T) {
 	}
 }
 
-// The chart's defaults are the code's: values.yaml's keyCache block against
-// the constants loadConfig falls back to.
-func TestChartCacheDefaultsMatchTheCode(t *testing.T) {
-	raw, err := os.ReadFile("../../helm/values.yaml")
+// A lease of 0 is a token without a TTL: one login, however long it is used.
+func TestVaultTokenWithoutTTL(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("sa-jwt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logins atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/auth/kubernetes/login":
+			logins.Add(1)
+			_, _ = w.Write([]byte(`{"auth":{"client_token":"tok","lease_duration":0}}`))
+		case "/v1/transit/decrypt/dkim":
+			_, _ = w.Write([]byte(`{"data":{"batch_results":[{"plaintext":"cGVt"}]}}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	v, err := newVaultTransit(vaultConfig{addr: srv.URL, authPath: "kubernetes", role: "dkim", tokenFile: tokenFile, transitPath: "transit", transitKey: "dkim"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	block := string(raw)[strings.Index(string(raw), "\nkeyCache:\n"):]
+	ck := &clock{t: time.Unix(1_800_000_000, 0)}
+	v.now = ck.now
+	for i := 0; i < 3; i++ {
+		if _, err := v.Decrypt(t.Context(), []string{"vault:v1:x"}); err != nil {
+			t.Fatal(err)
+		}
+		ck.add(24 * time.Hour)
+	}
+	if logins.Load() != 1 {
+		t.Errorf("three decrypts a day apart with lease 0: %d logins, want 1", logins.Load())
+	}
+}
+
+// Check passes only when Vault says the token may update the Transit key's
+// decrypt path: a login alone is not enough.
+func TestVaultCheckNeedsDecrypt(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("sa-jwt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
-		key  string
-		want int
-	}{{"size", defaultCacheSize}, {"ttlSeconds", defaultCacheTTL}, {"missTtlSeconds", defaultCacheMissTTL}} {
-		m := regexp.MustCompile(`\n  ` + tc.key + `: (\d+)`).FindStringSubmatch(block)
-		if m == nil {
-			t.Errorf("keyCache.%s not in values.yaml", tc.key)
+		name, answer string
+		code         int
+		ok           bool
+	}{
+		{"update", `{"capabilities":["update"],"transit/decrypt/dkim":["update"]}`, 200, true},
+		{"root", `{"capabilities":["root"],"transit/decrypt/dkim":["root"]}`, 200, true},
+		{"read only", `{"capabilities":["read"],"transit/decrypt/dkim":["read"]}`, 200, false},
+		{"deny", `{"capabilities":["deny"],"transit/decrypt/dkim":["deny"]}`, 200, false},
+		{"other path only", `{"capabilities":["update"],"transit/decrypt/other":["update"]}`, 200, false},
+		{"refused", `{"errors":["permission denied"]}`, 403, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/auth/kubernetes/login":
+					_, _ = w.Write([]byte(`{"auth":{"client_token":"tok","lease_duration":600}}`))
+				case "/v1/sys/capabilities-self":
+					var in struct{ Paths []string }
+					if err := json.NewDecoder(r.Body).Decode(&in); err != nil || len(in.Paths) != 1 || in.Paths[0] != "transit/decrypt/dkim" {
+						t.Errorf("capabilities asked for %v (%v), want transit/decrypt/dkim", in.Paths, err)
+					}
+					w.WriteHeader(tc.code)
+					_, _ = w.Write([]byte(tc.answer))
+				}
+			}))
+			defer srv.Close()
+			v, err := newVaultTransit(vaultConfig{addr: srv.URL, authPath: "kubernetes", role: "dkim", tokenFile: tokenFile, transitPath: "transit", transitKey: "dkim"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := v.Check(t.Context()); (err == nil) != tc.ok {
+				t.Errorf("Check: %v, want ok = %v", err, tc.ok)
+			}
+		})
+	}
+}
+
+// /readyz waits for the key query itself: a query that fails (a wrong
+// DKIM_SQL_QUERY, a missing table) keeps the pod not ready; one that answers,
+// with no row for the probe domain, makes it ready.
+func TestWaitReadyRunsTheKeyQuery(t *testing.T) {
+	var asked atomic.Value
+	var fail atomic.Bool
+	fail.Store(true)
+	fetch := func(_ context.Context, domain string) (row, bool, error) {
+		asked.Store(domain)
+		if fail.Load() {
+			return row{}, false, errors.New("Table 'yarilo.dkim' doesn't exist")
+		}
+		return row{}, false, nil
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var ready atomic.Bool
+	done := make(chan struct{})
+	go func() { waitReady(ctx, fetch, plainKeys{}, &ready); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	if ready.Load() {
+		t.Fatal("ready while the key query fails")
+	}
+	fail.Store(false)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("not ready after the key query answered")
+	}
+	if !ready.Load() || asked.Load() != readyProbeDomain {
+		t.Errorf("ready %v after asking for %v", ready.Load(), asked.Load())
+	}
+}
+
+// The default queries take the domain's newest row, its domain compared
+// without case and spaces. The SQL itself ran against MySQL 8.4 and
+// PostgreSQL 18 with the schema's index; here it is pinned.
+func TestDefaultQueriesTakeTheNewestRow(t *testing.T) {
+	for driver, ph := range map[string]string{"postgres": "$1", "mysql": "?"} {
+		q := defaultQueries[driver]
+		for _, part := range []string{"WHERE lower(trim(domain)) = " + ph, "ORDER BY created_at DESC, id DESC LIMIT 1"} {
+			if !strings.Contains(q, part) {
+				t.Errorf("%s query %q lacks %q", driver, q, part)
+			}
+		}
+	}
+}
+
+// The milter server run() starts closes a connection that stays silent past
+// MILTER_READ_TIMEOUT_SECONDS.
+func TestMilterServerClosesASilentConnection(t *testing.T) {
+	c, _ := newTestCache(&table{rows: map[string]row{}}, &countingDecryptor{}, 10)
+	srv := newMilterServer(config{milterRead: 200 * time.Millisecond, milterWrite: time.Second}, c)
+	ln, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := conn.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Errorf("a silent connection: %v, want it closed by the server", err)
+	}
+}
+
+// valuesScalars reads values.yaml's scalar leaves as dotted paths.
+func valuesScalars(t *testing.T, path string) map[string]string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	type level struct {
+		indent int
+		key    string
+	}
+	var stack []level
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimLeft(line, " ")
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "- ") {
 			continue
 		}
-		if m[1] != strconv.Itoa(tc.want) {
-			t.Errorf("keyCache.%s = %s in values.yaml, %d in the code", tc.key, m[1], tc.want)
+		indent := len(line) - len(trimmed)
+		k, v, ok := strings.Cut(trimmed, ":")
+		if !ok {
+			continue
+		}
+		for len(stack) > 0 && stack[len(stack)-1].indent >= indent {
+			stack = stack[:len(stack)-1]
+		}
+		var parts []string
+		for _, l := range stack {
+			parts = append(parts, l.key)
+		}
+		parts = append(parts, k)
+		if v = strings.TrimSpace(v); v == "" {
+			stack = append(stack, level{indent, k})
+			continue
+		}
+		out[strings.Join(parts, ".")] = v
+	}
+	return out
+}
+
+// The chart's defaults are the code's, and each reaches the container as the
+// variable loadConfig reads.
+func TestChartDefaultsMatchTheCode(t *testing.T) {
+	values := valuesScalars(t, "../../helm/values.yaml")
+	tmpl, err := os.ReadFile("../../helm/templates/deployment.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		value, env string
+		want       int
+	}{
+		{"keyCache.size", "KEY_CACHE_SIZE", defaultCacheSize},
+		{"keyCache.ttlSeconds", "KEY_CACHE_TTL_SECONDS", defaultCacheTTL},
+		{"keyCache.missTtlSeconds", "KEY_CACHE_MISS_TTL_SECONDS", defaultCacheMissTTL},
+		{"db.maxOpenConns", "DB_MAX_OPEN_CONNS", defaultDBMaxOpen},
+		{"milterReadTimeoutSeconds", "MILTER_READ_TIMEOUT_SECONDS", defaultMilterRead},
+		{"milterWriteTimeoutSeconds", "MILTER_WRITE_TIMEOUT_SECONDS", defaultMilterWrite},
+	} {
+		got, ok := values[tc.value]
+		if !ok {
+			t.Errorf("%s not in values.yaml", tc.value)
+			continue
+		}
+		if got != strconv.Itoa(tc.want) {
+			t.Errorf("%s = %s in values.yaml, %d in the code", tc.value, got, tc.want)
+		}
+		wire := regexp.MustCompile(`- name: ` + tc.env + `\n\s+value: \{\{ \.Values\.` + regexp.QuoteMeta(tc.value) + ` \| quote \}\}`)
+		if !wire.Match(tmpl) {
+			t.Errorf("deployment.yaml does not pass %s as %s", tc.value, tc.env)
 		}
 	}
 }

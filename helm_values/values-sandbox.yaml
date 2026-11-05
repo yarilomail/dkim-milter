@@ -24,3 +24,13 @@ vault:
     issuerRef:
       name: yarilo-internal-ca
       kind: Issuer
+
+# The stand's Calico enforces it; relay-mta and relay-fwd run the milter.
+networkPolicy:
+  enabled: true
+  postfix:
+    podSelector:
+      matchExpressions:
+        - key: app
+          operator: In
+          values: [relay-mta, relay-fwd]

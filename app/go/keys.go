@@ -69,8 +69,9 @@ type call struct {
 
 // keyCache holds the keys of recently signed domains, at most size of them.
 // A miss reads the domain's row and decrypts that one key; concurrent misses
-// share one fetch. An entry is read again after ttl, so a new selector shows
-// within ttl; a domain with no row is remembered for missTTL. When the
+// share one fetch. An entry past ttl (missTTL for a domain with no row) is
+// still served at once while one background fetch reads the row again, so a
+// new selector shows within ttl and no message waits on a refresh. When the
 // database or Vault fails, a cached key keeps signing.
 type keyCache struct {
 	fetch   func(context.Context, string) (row, bool, error)
@@ -85,6 +86,7 @@ type keyCache struct {
 	lru      *list.List
 	inflight map[string]*call
 	withKey  int
+	bg       sync.WaitGroup
 }
 
 func newKeyCache(fetch func(context.Context, string) (row, bool, error), dec decryptor, size int, ttl, missTTL time.Duration) *keyCache {
@@ -97,14 +99,24 @@ func rowID(r row) [32]byte {
 }
 
 // lookup is the domain's key, false when it has none, or errUnavailable.
+// Only a domain with nothing cached waits for the database and Vault.
 func (c *keyCache) lookup(ctx context.Context, domain string) (key, bool, error) {
-	domain = strings.ToLower(domain)
+	domain = strings.ToLower(strings.TrimSpace(domain))
 	c.mu.Lock()
-	e := c.entries[domain]
-	if e != nil && c.now().Before(e.expires) {
+	if e := c.entries[domain]; e != nil {
 		c.lru.MoveToFront(e.elem)
+		label := hitLabel(e)
+		if !c.now().Before(e.expires) {
+			label = "stale"
+			if _, busy := c.inflight[domain]; !busy {
+				cl := &call{done: make(chan struct{})}
+				c.inflight[domain] = cl
+				c.bg.Add(1)
+				go c.revalidate(domain, e, cl)
+			}
+		}
 		c.mu.Unlock()
-		cacheLookups.WithLabelValues(hitLabel(e)).Inc()
+		cacheLookups.WithLabelValues(label).Inc()
 		return e.k, e.has, nil
 	}
 	cl, waiting := c.inflight[domain]
@@ -113,13 +125,10 @@ func (c *keyCache) lookup(ctx context.Context, domain string) (key, bool, error)
 		c.inflight[domain] = cl
 	}
 	c.mu.Unlock()
+	cacheLookups.WithLabelValues("miss").Inc()
 
 	if !waiting {
-		cl.e, cl.err = c.refresh(ctx, domain, e)
-		c.mu.Lock()
-		delete(c.inflight, domain)
-		c.mu.Unlock()
-		close(cl.done)
+		c.finish(domain, cl, func() (*entry, error) { return c.refresh(ctx, domain, nil) })
 	} else {
 		select {
 		case <-cl.done:
@@ -133,6 +142,23 @@ func (c *keyCache) lookup(ctx context.Context, domain string) (key, bool, error)
 	return cl.e.k, cl.e.has, nil
 }
 
+// revalidate reads an expired entry's row again in the background; the
+// entry is served meanwhile and stays when the read fails.
+func (c *keyCache) revalidate(domain string, prev *entry, cl *call) {
+	defer c.bg.Done()
+	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
+	defer cancel()
+	c.finish(domain, cl, func() (*entry, error) { return c.refresh(ctx, domain, prev) })
+}
+
+func (c *keyCache) finish(domain string, cl *call, fetch func() (*entry, error)) {
+	cl.e, cl.err = fetch()
+	c.mu.Lock()
+	delete(c.inflight, domain)
+	c.mu.Unlock()
+	close(cl.done)
+}
+
 func hitLabel(e *entry) string {
 	if e.has {
 		return "hit"
@@ -143,7 +169,6 @@ func hitLabel(e *entry) string {
 // refresh reads the domain's row; prev is the expired entry, kept and served
 // when the database or Vault fails, and reused when the row did not change.
 func (c *keyCache) refresh(ctx context.Context, domain string, prev *entry) (*entry, error) {
-	cacheLookups.WithLabelValues("miss").Inc()
 	r, found, err := c.fetch(ctx, domain)
 	if err != nil {
 		keyFetchErrors.WithLabelValues("db").Inc()
@@ -174,18 +199,28 @@ func (c *keyCache) refresh(ctx context.Context, domain string, prev *entry) (*en
 		expires: c.now().Add(c.ttl)}), nil
 }
 
-// stale keeps serving an expired answer when it cannot be read again: a key
-// signs on, a keyless domain stays unsigned. Only a domain the cache never
-// saw is unavailable.
+// stale keeps an expired answer when it cannot be read again: a key signs
+// on, a keyless domain stays unsigned, and the row is tried again after
+// missTTL. An answer evicted meanwhile goes back into the cache; one replaced
+// by a newer answer gives way to it. Only a domain the cache never saw is
+// unavailable.
 func (c *keyCache) stale(domain string, prev *entry, err error) (*entry, error) {
-	if prev != nil {
-		slog.Warn("keys: refresh failed, the cached key stays in use", "domain", domain, "err", err)
-		c.mu.Lock()
-		prev.expires = c.now().Add(c.missTTL)
-		c.mu.Unlock()
-		return prev, nil
+	if prev == nil {
+		return nil, err
 	}
-	return nil, err
+	slog.Warn("keys: refresh failed, the cached answer stays in use", "domain", domain, "err", err)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch cur := c.entries[domain]; cur {
+	case nil:
+		prev.expires = c.now().Add(c.missTTL)
+		c.insertLocked(prev)
+	case prev:
+		prev.expires = c.now().Add(c.missTTL)
+	default:
+		return cur, nil
+	}
+	return prev, nil
 }
 
 func (c *keyCache) store(e *entry) *entry {
@@ -194,6 +229,11 @@ func (c *keyCache) store(e *entry) *entry {
 	if old := c.entries[e.domain]; old != nil {
 		c.drop(old)
 	}
+	c.insertLocked(e)
+	return e
+}
+
+func (c *keyCache) insertLocked(e *entry) {
 	e.elem = c.lru.PushFront(e)
 	c.entries[e.domain] = e
 	if e.has {
@@ -203,7 +243,6 @@ func (c *keyCache) store(e *entry) *entry {
 		c.drop(c.lru.Back().Value.(*entry))
 	}
 	keysLoaded.Set(float64(c.withKey))
-	return e
 }
 
 func (c *keyCache) drop(e *entry) {

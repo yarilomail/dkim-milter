@@ -40,8 +40,8 @@ Postfix milter in Go that DKIM-signs each message with the key of its `From:` do
 ```
 dkim-milter/
 |- app/go/          main.go config.go keys.go vault.go signer.go metrics.go, tests, Dockerfile
-|- helm/            chart: Deployment, Service, ServiceAccount
-|- helm_values/     values-sandbox.yaml (MySQL, keys in the clear), values-keptemail.yaml (PostgreSQL, Vault)
+|- helm/            chart: Deployment, Service, ServiceAccount, NetworkPolicy, Vault CA Certificate
+|- helm_values/     values-sandbox.yaml (MySQL, Vault), values-keptemail.yaml (PostgreSQL, Vault)
 |- schema/          postgres.sql, mysql.sql
 `- doc/             this document, architecture diagram
 ```
@@ -51,17 +51,18 @@ dkim-milter/
 | Part | What |
 |:---|:---|
 | milter session | collects headers and body, signs at end of message, inserts `DKIM-Signature` at the top |
-| key cache | loads a domain's key on its first message, LRU of `KEY_CACHE_SIZE`, read again after the TTL, tempfail for an uncached domain while the database or Vault is down |
-| Vault client | Kubernetes login with the ServiceAccount token, one batch decrypt per load |
-| metrics | `/healthz`, `/readyz` (keys loaded), `/metrics` |
+| key cache | loads a domain's newest row on its first message, LRU of `KEY_CACHE_SIZE`; past the TTL the key signs on while the row is read again in the background; tempfail only for an uncached domain while the database or Vault is down |
+| Vault client | Kubernetes login with the ServiceAccount token, kept until four fifths of its TTL; one decrypt per load |
+| metrics | `/healthz`, `/readyz` (the key query runs and the token may decrypt), `/metrics` |
 
 ## Environment variables
 
 | Variable | Default | What |
 |:---|:---|:---|
 | `LISTEN_ADDR` / `METRICS_ADDR` | `0.0.0.0:8891` / `0.0.0.0:8081` | listeners |
-| `DB_DRIVER` / `DB_DSN` | `postgres` / --- | database |
-| `DKIM_SQL_QUERY` | `SELECT domain, selector, private_key_enc FROM dkim` | key query |
+| `DB_DRIVER` / `DB_DSN` / `DB_MAX_OPEN_CONNS` | `postgres` / --- / `10` | database |
+| `DKIM_SQL_QUERY` | `SELECT domain, selector, private_key_enc FROM dkim WHERE lower(trim(domain)) = $1 ORDER BY created_at DESC, id DESC LIMIT 1` (`?` for mysql) | one domain's newest row |
+| `MILTER_READ_TIMEOUT_SECONDS` / `MILTER_WRITE_TIMEOUT_SECONDS` | `3600` / `60` | milter connection timeouts |
 | `KEY_DECRYPT` | `vault` | `vault` or `none` |
 | `KEY_CACHE_SIZE` / `KEY_CACHE_TTL_SECONDS` / `KEY_CACHE_MISS_TTL_SECONDS` | `10000` / `600` / `60` | key cache |
 | `VAULT_ADDR` / `VAULT_ROLE` | --- | required with `vault` |
@@ -71,8 +72,8 @@ dkim-milter/
 
 ## Deploy
 
-The stand installs the chart with `helm upgrade` in `yarilo-relay`, beside yarilo-postfix; keptemail's ArgoCD application lives in `k8s_keptemail` with the cluster's other applications. The DSN comes from a Secret (`db.dsnSecret`); with `keyDecrypt: vault` the chart mounts the ServiceAccount token for the Vault role. Postfix: `smtpd_milters` after `mailfrom-milter`, `non_smtpd_milters`, `milter_default_action = tempfail`.
+The stand installs the chart with `helm upgrade` in `yarilo-relay`, beside yarilo-postfix; keptemail's ArgoCD application lives in `k8s_keptemail` with the cluster's other applications. The DSN comes from a Secret (`db.dsnSecret`); with `keyDecrypt: vault` the chart mounts the ServiceAccount token for the Vault role. Postfix: `smtpd_milters` after `mailfrom-milter`, `non_smtpd_milters`, `milter_default_action = tempfail`. With `networkPolicy.enabled` only the Postfix pods reach the milter port, on a CNI that enforces NetworkPolicy.
 
 ## Logging
 
-JSON on stdout, one line per message: `dkim: signed` with domain, selector and queue id, or `dkim: not signed` with the reason (no From domain, no key, error). Key loads, selector changes, refresh failures, tempfails, Vault failures and unusable keys are logged with the domain they concern.
+JSON on stdout, one line per message: `dkim: signed` with domain, selector and queue id, `dkim: not signed` with the reason (no From domain, no key, a key that would not sign), or `dkim: tempfail` when no key is cached and none can be read. Key loads, selector changes, refresh failures, tempfails, Vault failures and unusable keys are logged with the domain they concern.

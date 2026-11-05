@@ -3,7 +3,7 @@ module github.com/yarilomail/dkim-milter
 go 1.27.3
 
 require (
-	github.com/0kaba0hub/go-milter v0.5.0
+	github.com/0kaba0hub/go-milter v0.5.1
 	github.com/emersion/go-msgauth v0.7.0
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.12.0

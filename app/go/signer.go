@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -94,17 +93,13 @@ func (s *session) Headers(_ textproto.MIMEHeader, m *milter.Modifier) (milter.Re
 	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
 	k, ok, err := s.keys.lookup(ctx, domain)
 	cancel()
-	if errors.Is(err, errUnavailable) {
-		// No key in the cache and none to be read now: the MTA keeps the
-		// message and tries again, rather than sending it unsigned.
+	if err != nil {
+		// lookup fails only as errUnavailable: no key in the cache and none to
+		// be read now. The MTA keeps the message and tries again, rather than
+		// sending it unsigned.
 		signResults.WithLabelValues("tempfail").Inc()
 		log.Warn("dkim: tempfail, the key cannot be read", "err", err)
 		return milter.RespTempFail, nil
-	}
-	if err != nil {
-		signResults.WithLabelValues("error").Inc()
-		log.Error("dkim: not signed", "err", err)
-		return milter.RespAccept, nil
 	}
 	if !ok {
 		signResults.WithLabelValues("no_key").Inc()

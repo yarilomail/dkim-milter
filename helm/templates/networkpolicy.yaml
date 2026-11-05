@@ -1,0 +1,30 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $postfix := .Values.networkPolicy.postfix }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dkim-milter
+  labels:
+    app: dkim-milter
+spec:
+  podSelector:
+    matchLabels:
+      app: dkim-milter
+  policyTypes: [Ingress]
+  ingress:
+    # The milter port: only the Postfix that runs this milter.
+    - from:
+        - podSelector:
+            {{- required "networkPolicy.postfix.podSelector is required with networkPolicy.enabled" (empty $postfix.podSelector | ternary nil $postfix.podSelector) | toYaml | nindent 12 }}
+          {{- with $postfix.namespaceSelector }}
+          namespaceSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      ports:
+        - port: milter
+          protocol: TCP
+    # Probes and metrics from anywhere.
+    - ports:
+        - port: metrics
+          protocol: TCP
+{{- end }}
