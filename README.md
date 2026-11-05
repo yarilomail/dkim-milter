@@ -28,7 +28,7 @@ One row per domain in the table `dkim` ([schema/postgres.sql](schema/postgres.sq
 
 Keys load on demand. The first message of a domain reads its row (`SELECT … WHERE domain = ?`, by the index on `domain`), decrypts that one key with Vault Transit and keeps it in an LRU cache of `KEY_CACHE_SIZE` entries; concurrent first messages of one domain share that one query and decrypt. A cached key is used until `KEY_CACHE_TTL_SECONDS` have passed, then the row is read again: a new selector shows within that time, and an unchanged row is not decrypted again. A domain with no row (or a key that does not decrypt or parse) is remembered as keyless for `KEY_CACHE_MISS_TTL_SECONDS` and its mail goes unsigned.
 
-When the database or Vault fails (down, sealed), a domain with a key in the cache signs on, also past its TTL; a domain without one gets tempfail at the end of its headers, and the MTA keeps the message and retries. There is no setting for that: sending such mail unsigned would be the silent failure `milter_default_action = tempfail` is there to avoid.
+When the database or Vault fails (down, sealed), the cache keeps answering from what it has, also past the TTLs: a domain with a key signs on, a domain cached as keyless goes unsigned as before. Only a domain the cache has not seen gets tempfail at the end of its headers, and the MTA keeps the message and retries. There is no setting for that: sending such mail unsigned would be the silent failure `milter_default_action = tempfail` is there to avoid.
 
 The Kubernetes-auth token is kept until four fifths of its TTL and taken again on a 403. `/readyz` answers 200 once the database answers and, with Vault, one login has succeeded; no key is loaded before the first message.
 

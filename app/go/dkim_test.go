@@ -309,6 +309,7 @@ func TestKeyCacheUnavailable(t *testing.T) {
 	dec := &countingDecryptor{}
 	c, ck := newTestCache(tb, dec, 10)
 	_, _, _ = c.lookup(t.Context(), "cached.example")
+	_, _, _ = c.lookup(t.Context(), "keyless.example")
 	for _, failure := range []string{"vault", "db"} {
 		t.Run(failure, func(t *testing.T) {
 			dec.fail.Store(failure == "vault")
@@ -321,6 +322,9 @@ func TestKeyCacheUnavailable(t *testing.T) {
 			ck.add(11 * time.Minute)
 			if k, ok, err := c.lookup(t.Context(), "cached.example"); err != nil || !ok || k.selector != "s1" {
 				t.Errorf("cached domain past its TTL: %+v %v %v, want the cached key", k, ok, err)
+			}
+			if _, ok, err := c.lookup(t.Context(), "keyless.example"); err != nil || ok {
+				t.Errorf("keyless domain past its miss TTL: %v %v, want keyless, not unavailable", ok, err)
 			}
 		})
 	}

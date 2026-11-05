@@ -174,9 +174,11 @@ func (c *keyCache) refresh(ctx context.Context, domain string, prev *entry) (*en
 		expires: c.now().Add(c.ttl)}), nil
 }
 
-// stale keeps serving an expired key when it cannot be read again.
+// stale keeps serving an expired answer when it cannot be read again: a key
+// signs on, a keyless domain stays unsigned. Only a domain the cache never
+// saw is unavailable.
 func (c *keyCache) stale(domain string, prev *entry, err error) (*entry, error) {
-	if prev != nil && prev.has {
+	if prev != nil {
 		slog.Warn("keys: refresh failed, the cached key stays in use", "domain", domain, "err", err)
 		c.mu.Lock()
 		prev.expires = c.now().Add(c.missTTL)
