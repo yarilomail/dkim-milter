@@ -22,20 +22,26 @@ var signedHeaders = []string{
 	"List-Id", "List-Unsubscribe", "List-Unsubscribe-Post",
 }
 
-// session collects one message and signs it at the end of the body.
+// session signs one message as it streams: the signer is made at the end of
+// the headers and the body goes straight into it, so no body is held.
 type session struct {
 	keys    *keyStore
 	headers bytes.Buffer
-	body    bytes.Buffer
 	from    string
 	queueID string
+
+	signer *dkim.Signer
+	key    key
+	err    error
 }
 
 func (s *session) reset() {
+	if s.signer != nil {
+		_ = s.signer.Close()
+	}
 	s.headers.Reset()
-	s.body.Reset()
-	s.from = ""
-	s.queueID = ""
+	s.from, s.queueID = "", ""
+	s.signer, s.key, s.err = nil, key{}, nil
 }
 
 func (s *session) Connect(string, string, uint16, net.IP, *milter.Modifier) (milter.Response, error) {
@@ -67,19 +73,9 @@ func (s *session) Header(name, value string, _ *milter.Modifier) (milter.Respons
 	return milter.RespContinue, nil
 }
 
+// Headers picks the key; a message that will not be signed is accepted here,
+// so the MTA sends this milter no body for it.
 func (s *session) Headers(textproto.MIMEHeader, *milter.Modifier) (milter.Response, error) {
-	return milter.RespContinue, nil
-}
-
-func (s *session) BodyChunk(chunk []byte, _ *milter.Modifier) (milter.Response, error) {
-	s.body.Write(chunk)
-	return milter.RespContinue, nil
-}
-
-// Body signs with the key of the From domain; a message the signer cannot
-// sign is accepted unsigned, never held.
-func (s *session) Body(m *milter.Modifier) (milter.Response, error) {
-	defer s.reset()
 	domain := fromDomain(s.from)
 	log := slog.With("queue_id", s.queueID, "domain", domain)
 	if domain == "" {
@@ -93,7 +89,36 @@ func (s *session) Body(m *milter.Modifier) (milter.Response, error) {
 		log.Info("dkim: not signed, no key for the domain")
 		return milter.RespAccept, nil
 	}
-	value, err := sign(k, s.headers.Bytes(), s.body.Bytes())
+	sg, err := newMessageSigner(k, s.headers.Bytes())
+	if err != nil {
+		signResults.WithLabelValues("error").Inc()
+		log.Error("dkim: not signed", "err", err)
+		return milter.RespAccept, nil
+	}
+	s.signer, s.key = sg, k
+	return milter.RespContinue, nil
+}
+
+func (s *session) BodyChunk(chunk []byte, _ *milter.Modifier) (milter.Response, error) {
+	if s.signer != nil && s.err == nil {
+		if _, err := s.signer.Write(chunk); err != nil {
+			s.err = fmt.Errorf("dkim: write body: %w", err)
+		}
+	}
+	return milter.RespContinue, nil
+}
+
+// Body finishes the signature; a message the signer cannot sign is accepted
+// unsigned, never held.
+func (s *session) Body(m *milter.Modifier) (milter.Response, error) {
+	defer s.reset()
+	log := slog.With("queue_id", s.queueID, "domain", s.key.domain)
+	if s.signer == nil {
+		return milter.RespAccept, nil
+	}
+	sg := s.signer
+	s.signer = nil
+	value, err := finishSignature(sg, s.err)
 	if err != nil {
 		signResults.WithLabelValues("error").Inc()
 		log.Error("dkim: not signed", "err", err)
@@ -104,7 +129,7 @@ func (s *session) Body(m *milter.Modifier) (milter.Response, error) {
 		return nil, fmt.Errorf("dkim: insert header: %w", err)
 	}
 	signResults.WithLabelValues("signed").Inc()
-	log.Info("dkim: signed", "selector", k.selector)
+	log.Info("dkim: signed", "selector", s.key.selector)
 	return milter.RespAccept, nil
 }
 
@@ -113,9 +138,9 @@ func (s *session) Abort(*milter.Modifier) error {
 	return nil
 }
 
-// sign returns the DKIM-Signature field value for the message.
-func sign(k key, headers, body []byte) (string, error) {
-	signer, err := dkim.NewSigner(&dkim.SignOptions{
+// newMessageSigner starts a signature over the given header block.
+func newMessageSigner(k key, headers []byte) (*dkim.Signer, error) {
+	sg, err := dkim.NewSigner(&dkim.SignOptions{
 		Domain:                 k.domain,
 		Selector:               k.selector,
 		Signer:                 k.signer,
@@ -124,26 +149,44 @@ func sign(k key, headers, body []byte) (string, error) {
 		HeaderKeys:             signedHeaders,
 	})
 	if err != nil {
-		return "", fmt.Errorf("dkim: signer: %w", err)
+		return nil, fmt.Errorf("dkim: signer: %w", err)
 	}
-	if _, err := signer.Write(headers); err != nil {
-		return "", fmt.Errorf("dkim: write headers: %w", err)
+	if _, err := sg.Write(headers); err != nil {
+		_ = sg.Close()
+		return nil, fmt.Errorf("dkim: write headers: %w", err)
 	}
-	if _, err := signer.Write([]byte("\r\n")); err != nil {
-		return "", fmt.Errorf("dkim: write: %w", err)
+	if _, err := sg.Write([]byte("\r\n")); err != nil {
+		_ = sg.Close()
+		return nil, fmt.Errorf("dkim: write: %w", err)
 	}
-	if _, err := signer.Write(body); err != nil {
-		return "", fmt.Errorf("dkim: write body: %w", err)
+	return sg, nil
+}
+
+// finishSignature closes the signer and returns the DKIM-Signature value.
+func finishSignature(sg *dkim.Signer, writeErr error) (string, error) {
+	closeErr := sg.Close()
+	if writeErr != nil {
+		return "", writeErr
 	}
-	if err := signer.Close(); err != nil {
-		return "", fmt.Errorf("dkim: sign: %w", err)
+	if closeErr != nil {
+		return "", fmt.Errorf("dkim: sign: %w", closeErr)
 	}
-	field := strings.TrimSuffix(signer.Signature(), "\r\n")
+	field := strings.TrimSuffix(sg.Signature(), "\r\n")
 	name, value, ok := strings.Cut(field, ":")
 	if !ok || !strings.EqualFold(strings.TrimSpace(name), "DKIM-Signature") {
 		return "", fmt.Errorf("dkim: unexpected signature field %q", field)
 	}
 	return strings.TrimLeft(value, " "), nil
+}
+
+// sign returns the DKIM-Signature field value for a whole message.
+func sign(k key, headers, body []byte) (string, error) {
+	sg, err := newMessageSigner(k, headers)
+	if err != nil {
+		return "", err
+	}
+	_, werr := sg.Write(body)
+	return finishSignature(sg, werr)
 }
 
 // fromDomain is the domain of the first address in a From value, lower case.

@@ -1,4 +1,4 @@
-name: Deps check — dkim-milter
+name: Deps check dkim-milter
 
 on:
   schedule:
@@ -29,7 +29,7 @@ jobs:
         working-directory: app/go
         run: |
           # `all` walks the whole module graph, including modules only required
-          # by a dependency's go.mod and never built here — those cannot be
+          # by a dependency's go.mod and never built here: those cannot be
           # upgraded from this repo. List the modules actually reachable instead.
           MODS=$(go list -deps -test -f '{{with .Module}}{{.Path}}{{end}}' ./... 2>/dev/null | sort -u | grep -v '^$')
           UPDATES=$(go list -m -u $MODS 2>/dev/null | grep '\[' || true)

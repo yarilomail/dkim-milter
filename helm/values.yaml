@@ -1,7 +1,8 @@
 image:
   repository: ghcr.io/yarilomail/dkim-milter
-  tag: "latest"
-  pullPolicy: Always
+  # Empty: the chart's appVersion, the image this chart was released with.
+  tag: ""
+  pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 

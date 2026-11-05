@@ -19,6 +19,7 @@ Licensed under **AGPLv3**, see [LICENSE](LICENSE).
 - `relaxed/simple` canonicalization; RSA or Ed25519, by the key.
 - Signed fields: `From` (twice, so a `From` added later breaks the signature), `Reply-To`, `Subject`, `Date`, `To`, `Cc`, `Message-ID`, `In-Reply-To`, `References`, `MIME-Version`, `Content-Type`, `Content-Transfer-Encoding`, `List-Id`, `List-Unsubscribe`, `List-Unsubscribe-Post`.
 - The `DKIM-Signature` field is inserted at the top of the header.
+- The body is streamed into the signature as it arrives and never held, so memory does not grow with `message_size_limit`. A message that will not be signed is accepted at the end of its headers, and Postfix sends this milter no body for it.
 - A message it cannot sign (no `From` domain, no key for the domain, a signing error) is accepted unsigned with one log line; the milter never holds or refuses mail.
 
 ## Keys
@@ -106,7 +107,7 @@ Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selec
 
 | Value | Default | What |
 |:---|:---|:---|
-| `image.repository` / `.tag` | `ghcr.io/yarilomail/dkim-milter` / `latest` | image |
+| `image.repository` / `.tag` / `.pullPolicy` | `ghcr.io/yarilomail/dkim-milter` / the chart's `appVersion` / `IfNotPresent` | image |
 | `replicaCount` | `1` | stateless, any number |
 | `milterPort` / `metricsPort` | `8891` / `8081` | ports |
 | `db.driver` | `postgres` | `postgres` or `mysql` |

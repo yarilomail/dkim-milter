@@ -304,10 +304,15 @@ func TestMilterSignsThroughTheProtocol(t *testing.T) {
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
 
+	big := strings.Repeat("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123\r\n", 3<<20/66)
 	for _, tc := range []struct {
-		name, from string
-		signed     bool
-	}{{"key", "Alice <alice@example.org>", true}, {"no key", "carol@nokey.example", false}} {
+		name, from, body string
+		signed           bool
+	}{
+		{"key", "Alice <alice@example.org>", testBody, true},
+		{"3 MB body in many chunks", "Alice <alice@example.org>", big, true},
+		{"no key", "carol@nokey.example", testBody, false},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cl := milter.NewClientWithOptions("tcp", ln.Addr().String(), milter.ClientOptions{
 				ActionMask: milter.OptAddHeader, ProtocolMask: milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo,
@@ -329,10 +334,18 @@ func TestMilterSignsThroughTheProtocol(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := sess.HeaderEnd(); err != nil {
+			eoh, err := sess.HeaderEnd()
+			if err != nil {
 				t.Fatal(err)
 			}
-			mods, _, err := sess.BodyReadFrom(strings.NewReader(testBody))
+			if !tc.signed {
+				// Accepted at the end of the headers: the MTA sends no body for it.
+				if eoh.Code != milter.ActAccept {
+					t.Errorf("end of headers answered %c, want accept", eoh.Code)
+				}
+				return
+			}
+			mods, _, err := sess.BodyReadFrom(strings.NewReader(tc.body))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -352,7 +365,7 @@ func TestMilterSignsThroughTheProtocol(t *testing.T) {
 				t.Fatalf("want one DKIM-Signature inserted at the top, got %+v", mods)
 			}
 			v := strings.ReplaceAll(sig[0].HeaderValue, "\n", "\r\n")
-			msg := []byte("DKIM-Signature: " + v + "\r\n" + headers + "\r\n" + testBody)
+			msg := []byte("DKIM-Signature: " + v + "\r\n" + headers + "\r\n" + tc.body)
 			if err := verify(t, msg, txtRecord(t, k)); err != nil {
 				t.Errorf("the inserted signature does not verify: %v\n%s", err, msg)
 			}

@@ -1,4 +1,4 @@
-name: CI — dkim-milter
+name: CI dkim-milter
 
 on:
   push:
@@ -175,7 +175,7 @@ jobs:
         run: |
           # GITHUB_TOKEN may not push a ref whose range touches .github/workflows,
           # and that scope cannot be granted to it. Let the release API create the
-          # tag instead — it points at a commit that already exists.
+          # tag instead: it points at a commit that already exists.
           gh release create "${{ steps.version.outputs.tag }}" \
             --target "${{ github.sha }}" \
             --title "${{ steps.version.outputs.tag }}" \
