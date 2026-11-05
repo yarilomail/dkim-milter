@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -56,6 +57,33 @@ func newDecryptor(cfg config) (decryptor, error) {
 	return newVaultTransit(cfg.vault)
 }
 
+// checker is a decryptor that can say whether it is reachable.
+type checker interface{ Check(context.Context) error }
+
+// waitReady sets ready once the database answers and, with Vault, one login
+// succeeds; keys load on demand after that.
+func waitReady(ctx context.Context, db *sql.DB, dec decryptor, ready *atomic.Bool) {
+	backoff := time.Second
+	for {
+		err := db.PingContext(ctx)
+		if c, ok := dec.(checker); ok && err == nil {
+			err = c.Check(ctx)
+		}
+		if err == nil {
+			ready.Store(true)
+			slog.Info("dkim-milter: ready, keys load on demand")
+			return
+		}
+		slog.Error("dkim-milter: not ready", "err", err, "retry_in", backoff.String())
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, 30*time.Second)
+	}
+}
+
 func run() error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -70,13 +98,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	store := newKeyStore(sqlRows(db, cfg.query), dec)
+	cache := newKeyCache(sqlRow(db, cfg.query), dec, cfg.cacheSize, cfg.cacheTTL, cfg.cacheMissTTL)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	go store.run(ctx, cfg.reload)
+	var ready atomic.Bool
+	go waitReady(ctx, db, dec, &ready)
 
-	hs := &http.Server{Addr: cfg.metricsAddr, Handler: metricsMux(store.loaded.Load), ReadHeaderTimeout: 10 * time.Second}
+	hs := &http.Server{Addr: cfg.metricsAddr, Handler: metricsMux(ready.Load), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("dkim-milter: metrics listener", "err", err)
@@ -88,11 +117,12 @@ func run() error {
 		return fmt.Errorf("milter: listen %s: %w", cfg.listenAddr, err)
 	}
 	srv := &milter.Server{
-		NewMilter: func() milter.Milter { return &session{keys: store} },
+		NewMilter: func() milter.Milter { return &session{keys: cache} },
 		Actions:   milter.OptAddHeader,
 		Protocol:  milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo,
 	}
-	slog.Info("dkim-milter: listening", "addr", cfg.listenAddr, "db", cfg.dbDriver, "decrypt", cfg.decrypt, "reload", cfg.reload.String())
+	slog.Info("dkim-milter: listening", "addr", cfg.listenAddr, "db", cfg.dbDriver, "decrypt", cfg.decrypt,
+		"cache_size", cfg.cacheSize, "cache_ttl", cfg.cacheTTL.String(), "miss_ttl", cfg.cacheMissTTL.String())
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
 	select {

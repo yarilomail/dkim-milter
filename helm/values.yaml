@@ -24,14 +24,23 @@ db:
   dsnSecret:
     name: ""
     key: DB_DSN
-  # Three columns: domain, selector, the stored private key.
-  query: "SELECT domain, selector, private_key_enc FROM dkim"
+  # One domain's row: domain, selector, the stored private key, with one
+  # placeholder for the domain ($1 for postgres, ? for mysql). Empty: the
+  # driver's default, SELECT domain, selector, private_key_enc FROM dkim WHERE domain = <placeholder>.
+  query: ""
 
 # vault: the column holds Vault Transit ciphertext; none: the column holds PEM.
 keyDecrypt: vault
 
-# Seconds between key reloads; 0 loads once at start.
-keyReloadSeconds: 60
+# Keys load on demand into an LRU cache. A cached key is read again after
+# ttlSeconds, so a new selector shows within it; a domain without a row is
+# remembered for missTtlSeconds. A parsed RSA-2048 key takes about 5 KB of
+# heap with its cache entry, Ed25519 under 1 KB: size 10000 of RSA keys is
+# about 50 MB, which resources.limits.memory must leave room for.
+keyCache:
+  size: 10000
+  ttlSeconds: 600
+  missTtlSeconds: 60
 
 vault:
   addr: ""
@@ -58,6 +67,7 @@ resources:
     memory: 32Mi
   limits:
     cpu: 200m
-    memory: 64Mi
+    # keyCache.size RSA keys at about 5 KB each, plus about 30 MB for the process.
+    memory: 128Mi
 
 nodeSelector: {}

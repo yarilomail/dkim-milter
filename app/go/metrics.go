@@ -10,20 +10,17 @@ import (
 
 var (
 	signResults = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "dkim_messages_total", Help: "Messages seen, by result: signed, no_key, no_from, error.",
+		Name: "dkim_messages_total", Help: "Messages seen, by result: signed, no_key, no_from, tempfail, error.",
 	}, []string{"result"})
 	keysLoaded = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "dkim_keys_loaded", Help: "Domains with a usable key in memory.",
+		Name: "dkim_keys_loaded", Help: "Domains with a key in the cache.",
 	})
-	keysLoadedAt = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "dkim_keys_loaded_timestamp_seconds", Help: "Unix time of the last successful key load.",
-	})
-	keyLoadErrors = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "dkim_key_load_errors_total", Help: "Key loads that failed as a whole; the previous keys stay in use.",
-	})
-	keyRowErrors = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "dkim_key_row_errors_total", Help: "Keys that did not decrypt or parse; their domains are not signed.",
-	})
+	cacheLookups = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dkim_key_cache_lookups_total", Help: "Key lookups, by result: hit, negative_hit (cached as keyless), miss.",
+	}, []string{"result"})
+	keyFetchErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dkim_key_fetch_errors_total", Help: "Key fetches that failed, by stage: db, vault, parse.",
+	}, []string{"stage"})
 )
 
 func metricsMux(ready func() bool) *http.ServeMux {
@@ -32,7 +29,7 @@ func metricsMux(ready func() bool) *http.ServeMux {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		if !ready() {
-			http.Error(w, "keys not loaded", http.StatusServiceUnavailable)
+			http.Error(w, "database or Vault not reached yet", http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)

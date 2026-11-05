@@ -22,7 +22,7 @@ header-includes:
 
 ## dkim-milter
 
-Postfix milter in Go that DKIM-signs each message with the key of its `From:` domain. Keys per domain come from the table `dkim` in PostgreSQL or MySQL; private keys are stored encrypted with Vault Transit and decrypted into memory, so a sealed Vault blocks a restart, not signing. A message it cannot sign is accepted unsigned; the milter never holds mail.
+Postfix milter in Go that DKIM-signs each message with the key of its `From:` domain. Keys per domain come from the table `dkim` in PostgreSQL or MySQL, private keys encrypted with Vault Transit; each is decrypted on the domain's first message into a bounded cache, so a sealed Vault stops only domains not in the cache, whose mail waits in the queue. A message it cannot sign is accepted unsigned; the milter never holds mail.
 
 ![dkim-milter architecture](arch-dkim.png){ width=100% }
 
@@ -51,7 +51,7 @@ dkim-milter/
 | Part | What |
 |:---|:---|
 | milter session | collects headers and body, signs at end of message, inserts `DKIM-Signature` at the top |
-| key store | reads the key query, decrypts new rows, keeps the last good set on a failed reload |
+| key cache | loads a domain's key on its first message, LRU of `KEY_CACHE_SIZE`, read again after the TTL, tempfail for an uncached domain while the database or Vault is down |
 | Vault client | Kubernetes login with the ServiceAccount token, one batch decrypt per load |
 | metrics | `/healthz`, `/readyz` (keys loaded), `/metrics` |
 
@@ -63,7 +63,7 @@ dkim-milter/
 | `DB_DRIVER` / `DB_DSN` | `postgres` / --- | database |
 | `DKIM_SQL_QUERY` | `SELECT domain, selector, private_key_enc FROM dkim` | key query |
 | `KEY_DECRYPT` | `vault` | `vault` or `none` |
-| `KEY_RELOAD_SECONDS` | `60` | `0` loads once |
+| `KEY_CACHE_SIZE` / `KEY_CACHE_TTL_SECONDS` / `KEY_CACHE_MISS_TTL_SECONDS` | `10000` / `600` / `60` | key cache |
 | `VAULT_ADDR` / `VAULT_ROLE` | --- | required with `vault` |
 | `VAULT_AUTH_PATH` / `VAULT_TRANSIT_PATH` / `VAULT_TRANSIT_KEY` | `kubernetes` / `transit` / `dkim` | mounts and key |
 | `VAULT_SA_TOKEN_FILE` / `VAULT_CACERT` | SA token path / --- | login token, CA |
@@ -75,4 +75,4 @@ The stand installs the chart with `helm upgrade` in `yarilo-relay`, beside yaril
 
 ## Logging
 
-JSON on stdout, one line per message: `dkim: signed` with domain, selector and queue id, or `dkim: not signed` with the reason (no From domain, no key, error). Key loads and reloads, Vault failures and unusable keys are logged with the domain they concern.
+JSON on stdout, one line per message: `dkim: signed` with domain, selector and queue id, or `dkim: not signed` with the reason (no From domain, no key, error). Key loads, selector changes, refresh failures, tempfails, Vault failures and unusable keys are logged with the domain they concern.

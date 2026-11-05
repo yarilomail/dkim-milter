@@ -2,16 +2,22 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/mail"
 	"net/textproto"
 	"strings"
+	"time"
 
 	"github.com/0kaba0hub/go-milter"
 	"github.com/emersion/go-msgauth/dkim"
 )
+
+// lookupTimeout bounds one key lookup: a database query and a Vault decrypt.
+const lookupTimeout = 10 * time.Second
 
 // signedHeaders are the fields signed; From is listed twice so that a From
 // added after signing breaks the signature (oversigning).
@@ -25,7 +31,7 @@ var signedHeaders = []string{
 // session signs one message as it streams: the signer is made at the end of
 // the headers and the body goes straight into it, so no body is held.
 type session struct {
-	keys    *keyStore
+	keys    *keyCache
 	headers bytes.Buffer
 	from    string
 	queueID string
@@ -85,7 +91,21 @@ func (s *session) Headers(_ textproto.MIMEHeader, m *milter.Modifier) (milter.Re
 		log.Info("dkim: not signed, no From domain")
 		return milter.RespAccept, nil
 	}
-	k, ok := s.keys.lookup(domain)
+	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
+	k, ok, err := s.keys.lookup(ctx, domain)
+	cancel()
+	if errors.Is(err, errUnavailable) {
+		// No key in the cache and none to be read now: the MTA keeps the
+		// message and tries again, rather than sending it unsigned.
+		signResults.WithLabelValues("tempfail").Inc()
+		log.Warn("dkim: tempfail, the key cannot be read", "err", err)
+		return milter.RespTempFail, nil
+	}
+	if err != nil {
+		signResults.WithLabelValues("error").Inc()
+		log.Error("dkim: not signed", "err", err)
+		return milter.RespAccept, nil
+	}
 	if !ok {
 		signResults.WithLabelValues("no_key").Inc()
 		log.Info("dkim: not signed, no key for the domain")

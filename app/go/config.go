@@ -9,11 +9,12 @@ import (
 )
 
 const (
-	defaultListenAddr  = "0.0.0.0:8891"
-	defaultMetricsAddr = "0.0.0.0:8081"
-	defaultQuery       = "SELECT domain, selector, private_key_enc FROM dkim"
-	defaultReload      = 60
-	defaultSATokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	defaultListenAddr   = "0.0.0.0:8891"
+	defaultMetricsAddr  = "0.0.0.0:8081"
+	defaultCacheSize    = 10000
+	defaultCacheTTL     = 600
+	defaultCacheMissTTL = 60
+	defaultSATokenFile  = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 )
 
 type config struct {
@@ -27,7 +28,24 @@ type config struct {
 	decrypt string // vault | none
 	vault   vaultConfig
 
-	reload time.Duration
+	cacheSize    int
+	cacheTTL     time.Duration
+	cacheMissTTL time.Duration
+}
+
+// defaultQueries read one domain's row; the placeholder is the driver's.
+var defaultQueries = map[string]string{
+	"postgres": "SELECT domain, selector, private_key_enc FROM dkim WHERE domain = $1",
+	"mysql":    "SELECT domain, selector, private_key_enc FROM dkim WHERE domain = ?",
+}
+
+// positive reads a whole number above zero.
+func positive(name string, def int) (int, error) {
+	v, err := strconv.Atoi(env(name, strconv.Itoa(def)))
+	if err != nil || v <= 0 {
+		return 0, fmt.Errorf("config: %s %q: a whole number above 0", name, os.Getenv(name))
+	}
+	return v, nil
 }
 
 type vaultConfig struct {
@@ -53,7 +71,6 @@ func loadConfig() (config, error) {
 		metricsAddr: env("METRICS_ADDR", defaultMetricsAddr),
 		dbDriver:    strings.ToLower(env("DB_DRIVER", "postgres")),
 		dbDSN:       os.Getenv("DB_DSN"),
-		query:       env("DKIM_SQL_QUERY", defaultQuery),
 		decrypt:     strings.ToLower(env("KEY_DECRYPT", "vault")),
 		vault: vaultConfig{
 			addr:        os.Getenv("VAULT_ADDR"),
@@ -65,16 +82,24 @@ func loadConfig() (config, error) {
 			transitKey:  env("VAULT_TRANSIT_KEY", "dkim"),
 		},
 	}
-	secs, err := strconv.Atoi(env("KEY_RELOAD_SECONDS", strconv.Itoa(defaultReload)))
-	if err != nil || secs < 0 {
-		return c, fmt.Errorf("config: KEY_RELOAD_SECONDS %q: a whole number of seconds, 0 to load once", os.Getenv("KEY_RELOAD_SECONDS"))
+	var err error
+	if c.cacheSize, err = positive("KEY_CACHE_SIZE", defaultCacheSize); err != nil {
+		return c, err
 	}
-	c.reload = time.Duration(secs) * time.Second
-	switch c.dbDriver {
-	case "postgres", "mysql":
-	default:
+	ttl, err := positive("KEY_CACHE_TTL_SECONDS", defaultCacheTTL)
+	if err != nil {
+		return c, err
+	}
+	miss, err := positive("KEY_CACHE_MISS_TTL_SECONDS", defaultCacheMissTTL)
+	if err != nil {
+		return c, err
+	}
+	c.cacheTTL, c.cacheMissTTL = time.Duration(ttl)*time.Second, time.Duration(miss)*time.Second
+	def, ok := defaultQueries[c.dbDriver]
+	if !ok {
 		return c, fmt.Errorf("config: DB_DRIVER %q: postgres or mysql", c.dbDriver)
 	}
+	c.query = env("DKIM_SQL_QUERY", def)
 	if c.dbDSN == "" {
 		return c, fmt.Errorf("config: DB_DSN is required")
 	}

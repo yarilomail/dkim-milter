@@ -10,7 +10,7 @@ digraph dkim {
   client -> postfix [label="SMTP AUTH"];
   postfix -> mf [label="milter"];
   postfix -> dk [label="milter"];
-  dk -> db [label="read keys\nevery 60 s"];
-  dk -> vault [label="decrypt new rows\n(k8s auth)"];
+  dk -> db [label="read a row\non a cache miss"];
+  dk -> vault [label="decrypt one key\n(k8s auth)"];
   postfix -> out [label="signed message"];
 }

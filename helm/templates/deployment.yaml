@@ -52,12 +52,18 @@ spec:
                 secretKeyRef:
                   name: {{ required "db.dsnSecret.name is required" .Values.db.dsnSecret.name }}
                   key: {{ .Values.db.dsnSecret.key }}
+            {{- with .Values.db.query }}
             - name: DKIM_SQL_QUERY
-              value: {{ .Values.db.query | quote }}
+              value: {{ . | quote }}
+            {{- end }}
             - name: KEY_DECRYPT
               value: {{ .Values.keyDecrypt | quote }}
-            - name: KEY_RELOAD_SECONDS
-              value: {{ .Values.keyReloadSeconds | quote }}
+            - name: KEY_CACHE_SIZE
+              value: {{ .Values.keyCache.size | quote }}
+            - name: KEY_CACHE_TTL_SECONDS
+              value: {{ .Values.keyCache.ttlSeconds | quote }}
+            - name: KEY_CACHE_MISS_TTL_SECONDS
+              value: {{ .Values.keyCache.missTtlSeconds | quote }}
             {{- if eq .Values.keyDecrypt "vault" }}
             - name: VAULT_ADDR
               value: {{ required "vault.addr is required with keyDecrypt vault" .Values.vault.addr | quote }}

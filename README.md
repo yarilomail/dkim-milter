@@ -26,9 +26,13 @@ Licensed under **AGPLv3**, see [LICENSE](LICENSE).
 
 One row per domain in the table `dkim` ([schema/postgres.sql](schema/postgres.sql), [schema/mysql.sql](schema/mysql.sql)): `domain`, `selector`, `public_key`, `private_key_enc`. With `KEY_DECRYPT=vault`, `private_key_enc` is the PEM private key encrypted with the Vault Transit key `dkim`: the database, its dumps and its backups hold ciphertext only, and the encryption key never leaves Vault.
 
-At start the signer logs in to Vault with its ServiceAccount token, decrypts every key in one batch request and keeps them in memory. `/readyz` answers 200 once that has happened. Every `KEY_RELOAD_SECONDS` it reads the table again and decrypts only rows it has not seen; a row removed from the table stops signing. A reload that fails (database or Vault unreachable, Vault sealed) keeps the loaded keys: a sealed Vault blocks only a restart of the signer, not signing. A key that does not decrypt or parse is skipped with a log line; the other domains sign.
+Keys load on demand. The first message of a domain reads its row (`SELECT … WHERE domain = ?`, by the index on `domain`), decrypts that one key with Vault Transit and keeps it in an LRU cache of `KEY_CACHE_SIZE` entries; concurrent first messages of one domain share that one query and decrypt. A cached key is used until `KEY_CACHE_TTL_SECONDS` have passed, then the row is read again: a new selector shows within that time, and an unchanged row is not decrypted again. A domain with no row (or a key that does not decrypt or parse) is remembered as keyless for `KEY_CACHE_MISS_TTL_SECONDS` and its mail goes unsigned.
 
-When a domain has two rows, the first the query returns is used and a warning names the other.
+When the database or Vault fails (down, sealed), the cache keeps answering from what it has, also past the TTLs: a domain with a key signs on, a domain cached as keyless goes unsigned as before. Only a domain the cache has not seen gets tempfail at the end of its headers, and the MTA keeps the message and retries. There is no setting for that: sending such mail unsigned would be the silent failure `milter_default_action = tempfail` is there to avoid.
+
+The Kubernetes-auth token is kept until four fifths of its TTL and taken again on a 403. `/readyz` answers 200 once the database answers and, with Vault, one login has succeeded; no key is loaded before the first message.
+
+Memory: a parsed RSA-2048 key takes about 5 KB of heap with its cache entry, Ed25519 under 1 KB. The default of 10 000 RSA keys is about 50 MB; the chart's limit of 128Mi leaves room for it and the process.
 
 ### Adding a domain
 
@@ -79,9 +83,11 @@ milter_default_action = tempfail
 | `METRICS_ADDR` | `0.0.0.0:8081` | `/healthz`, `/readyz`, `/metrics` |
 | `DB_DRIVER` | `postgres` | `postgres` or `mysql` |
 | `DB_DSN` | --- | `postgres://user:pass@host:5432/db?sslmode=...`, or for MySQL `user:pass@tcp(host:3306)/db` |
-| `DKIM_SQL_QUERY` | `SELECT domain, selector, private_key_enc FROM dkim` | three columns: domain, selector, stored private key |
+| `DKIM_SQL_QUERY` | `SELECT domain, selector, private_key_enc FROM dkim WHERE domain = $1` (`?` for mysql) | one domain's row: domain, selector, stored private key; one placeholder, the domain |
 | `KEY_DECRYPT` | `vault` | `vault`: the column is Vault Transit ciphertext; `none`: the column is PEM (logged as a warning) |
-| `KEY_RELOAD_SECONDS` | `60` | seconds between reloads; `0` loads once |
+| `KEY_CACHE_SIZE` | `10000` | keys held, least recently used dropped first |
+| `KEY_CACHE_TTL_SECONDS` | `600` | a cached key is read again after this |
+| `KEY_CACHE_MISS_TTL_SECONDS` | `60` | a keyless domain is remembered this long |
 | `VAULT_ADDR` | --- | required with `vault` |
 | `VAULT_ROLE` | --- | Kubernetes auth role, required with `vault` |
 | `VAULT_AUTH_PATH` | `kubernetes` | auth mount |
@@ -97,11 +103,10 @@ Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selec
 
 | Metric | What |
 |:---|:---|
-| `dkim_messages_total{result}` | `signed`, `no_key`, `no_from`, `error` |
-| `dkim_keys_loaded` | domains with a usable key |
-| `dkim_keys_loaded_timestamp_seconds` | last successful load |
-| `dkim_key_load_errors_total` | loads that failed as a whole |
-| `dkim_key_row_errors_total` | keys that did not decrypt or parse |
+| `dkim_messages_total{result}` | `signed`, `no_key`, `no_from`, `tempfail`, `error` |
+| `dkim_keys_loaded` | domains with a key in the cache |
+| `dkim_key_cache_lookups_total{result}` | `hit`, `negative_hit` (cached as keyless), `miss` |
+| `dkim_key_fetch_errors_total{stage}` | `db`, `vault`, `parse` |
 
 ## Helm
 
@@ -112,9 +117,10 @@ Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selec
 | `milterPort` / `metricsPort` | `8891` / `8081` | ports |
 | `db.driver` | `postgres` | `postgres` or `mysql` |
 | `db.dsnSecret.name` / `.key` | --- / `DB_DSN` | Secret with the DSN |
-| `db.query` | as `DKIM_SQL_QUERY` | key query |
+| `db.query` | --- (the driver's default) | as `DKIM_SQL_QUERY` |
 | `keyDecrypt` | `vault` | `vault` or `none` |
-| `keyReloadSeconds` | `60` | reload interval |
+| `keyCache.size` / `.ttlSeconds` / `.missTtlSeconds` | `10000` / `600` / `60` | as `KEY_CACHE_SIZE`, `KEY_CACHE_TTL_SECONDS`, `KEY_CACHE_MISS_TTL_SECONDS` |
+| `resources.limits.memory` | `128Mi` | room for `keyCache.size` keys, see Keys |
 | `vault.addr`, `vault.role` | --- | required with `vault` |
 | `vault.authPath`, `.transitPath`, `.transitKey` | `kubernetes`, `transit`, `dkim` | mounts and key |
 | `vault.caCertSecret` | --- | Secret with `ca.crt` |
@@ -143,7 +149,7 @@ kubectl create secret generic dkim-milter-db -n <namespace> \
 
 ## Build and release
 
-`app/go`, Go 1.27. `go test ./...` covers signing and verification for RSA and Ed25519, the From oversigning, key parsing, reloads, Vault Transit and a full milter conversation. Work lands on `develop` through pull requests; `main` takes releases only. Both branches accept changes by pull request alone, with Lint and Test green, no force-push and no deletion.
+`app/go`, Go 1.27. `go test ./...` covers signing and verification for RSA and Ed25519, the From oversigning, key parsing, the key cache (hits, shared misses, TTL and selector rotation, keyless domains, eviction, Vault or the database down), Vault Transit with its kept token and a full milter conversation. Work lands on `develop` through pull requests; `main` takes releases only. Both branches accept changes by pull request alone, with Lint and Test green, no force-push and no deletion.
 
 - `develop` carries `-dev.N` in `helm/Chart.yaml` (both `version` and `appVersion`, bumped in the PR that changes the image). Each merge builds the image tagged with the commit, `develop` and the `-dev.N` version.
 - A merge of `develop` into `main` with a release version builds the image tagged with the commit, `latest` and `v<version>`, and creates the GitHub release with notes from git-cliff.
