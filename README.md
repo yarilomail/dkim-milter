@@ -91,7 +91,7 @@ milter_default_action = tempfail
 | `VAULT_CACERT` | --- | CA file for Vault's certificate |
 | `LOG_LEVEL` | --- | `debug` for more |
 
-Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selector and queue id, or the reason it was not.
+Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selector and queue id, or the reason it was not. The queue id is the macro `i` at the end of the message (`milter_end_of_data_macros`, whose Postfix default holds `i`), or at the end of the headers for a message accepted there; at `MAIL FROM` Postfix has none yet, since `smtpd_delay_open_until_valid_rcpt` creates the queue file at the first accepted `RCPT`.
 
 ## Metrics
 

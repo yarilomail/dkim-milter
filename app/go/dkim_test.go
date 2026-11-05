@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -370,5 +371,76 @@ func TestMilterSignsThroughTheProtocol(t *testing.T) {
 				t.Errorf("the inserted signature does not verify: %v\n%s", err, msg)
 			}
 		})
+	}
+}
+
+// Postfix has no queue id at MAIL FROM (smtpd_delay_open_until_valid_rcpt)
+// and sends it with the end-of-data macros: the signed line must carry it.
+func TestQueueIDFromTheEndOfData(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	k := edKey(t)
+	s := newKeyStore(func(context.Context) ([]row, error) {
+		return []row{{"example.org", "s1", pkcs8PEM(t, k)}}, nil
+	}, plainKeys{})
+	if err := s.load(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &milter.Server{NewMilter: func() milter.Milter { return &session{keys: s} },
+		Actions: milter.OptAddHeader, Protocol: milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	cl := milter.NewClientWithOptions("tcp", ln.Addr().String(), milter.ClientOptions{
+		ActionMask: milter.OptAddHeader, ProtocolMask: milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo,
+		ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second,
+	})
+	t.Cleanup(func() { _ = cl.Close() })
+	sess, err := cl.Session()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	if err := sess.Macros(milter.CodeMail, "{mail_addr}", "alice@example.org"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.Mail("<alice@example.org>", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(testHeaders, "\r\n"), "\r\n") {
+		name, value, _ := strings.Cut(line, ": ")
+		if _, err := sess.HeaderField(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := sess.HeaderEnd(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Macros(milter.CodeEOB, "i", "4QzX1y2Kq9"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := sess.BodyReadFrom(strings.NewReader(testBody)); err != nil {
+		t.Fatal(err)
+	}
+	var signed map[string]any
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, `"msg":"dkim: signed"`) {
+			if err := json.Unmarshal([]byte(line), &signed); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if signed == nil {
+		t.Fatalf("no signed line:\n%s", buf.String())
+	}
+	if signed["queue_id"] != "4QzX1y2Kq9" {
+		t.Errorf("signed line queue_id = %v, want the end-of-data id 4QzX1y2Kq9", signed["queue_id"])
 	}
 }
