@@ -505,7 +505,7 @@ func TestMilterSignsThroughTheProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &milter.Server{NewMilter: func() milter.Milter { return &session{keys: s} },
+	srv := &milter.Server{NewMilter: func() milter.Milter { return &session{keys: s, signAuth: signAuthAligned} },
 		Actions: milter.OptAddHeader, Protocol: milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
@@ -596,7 +596,7 @@ func TestQueueIDFromTheEndOfData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &milter.Server{NewMilter: func() milter.Milter { return &session{keys: s} },
+	srv := &milter.Server{NewMilter: func() milter.Milter { return &session{keys: s, signAuth: signAuthAligned} },
 		Actions: milter.OptAddHeader, Protocol: milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
@@ -723,7 +723,7 @@ func TestMilterTempfailsAnUncachedDomainWhenVaultIsDown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &milter.Server{NewMilter: func() milter.Milter { return &session{keys: c} },
+	srv := &milter.Server{NewMilter: func() milter.Milter { return &session{keys: c, signAuth: signAuthAligned} },
 		Actions: milter.OptAddHeader, Protocol: milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
@@ -956,6 +956,9 @@ func valuesScalars(t *testing.T, path string) map[string]string {
 // variable loadConfig reads.
 func TestChartDefaultsMatchTheCode(t *testing.T) {
 	values := valuesScalars(t, "../../helm/values.yaml")
+	if values["signAuth"] != signAuthAligned {
+		t.Errorf("signAuth = %q in values.yaml, %q in the code", values["signAuth"], signAuthAligned)
+	}
 	tmpl, err := os.ReadFile("../../helm/templates/deployment.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -986,39 +989,42 @@ func TestChartDefaultsMatchTheCode(t *testing.T) {
 	}
 }
 
-// A key is used only for a client that logged in as a user of the From
-// domain, or as a trusted login; anyone else's mail passes unsigned, counted
-// as unauthorized, and the key is not even looked up.
-func TestSigningNeedsAuthForTheFromDomain(t *testing.T) {
+// Without a login nothing is signed. aligned signs a login of the From
+// domain only; any signs every login, a foreign From too. A message not
+// signed is counted as unauthorized and its key is not looked up.
+func TestSigningNeedsAuth(t *testing.T) {
 	tb := &table{rows: map[string]row{"example.org": {"example.org", "s1", pkcs8PEM(t, edKey(t))}}}
 	c, _ := newTestCache(tb, plainKeys{}, 10)
-	ln, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	addr := map[string]string{}
+	for _, mode := range []string{signAuthAligned, signAuthAny} {
+		ln, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := newMilterServer(config{milterRead: time.Minute, milterWrite: time.Minute, signAuth: mode}, c)
+		go func() { _ = srv.Serve(ln) }()
+		t.Cleanup(func() { _ = srv.Close() })
+		addr[mode] = ln.Addr().String()
 	}
-	srv := newMilterServer(config{milterRead: time.Minute, milterWrite: time.Minute,
-		trusted: map[string]bool{"relay-submit": true, "ops@other.example": true}}, c)
-	go func() { _ = srv.Serve(ln) }()
-	t.Cleanup(func() { _ = srv.Close() })
 	for _, tc := range []struct {
-		name, auth string
-		signed     bool
+		mode, name, auth string
+		signed           bool
 	}{
-		{"user of the domain", "bob@example.org", true},
-		{"user of the domain, other case", "Bob@Example.ORG", true},
-		{"trusted login", "relay-submit", true},
-		{"trusted login, other case", "Relay-Submit", true},
-		{"trusted login of another domain", "ops@other.example", true},
-		{"no login", "", false},
-		{"user of another domain", "mallory@evil.example", false},
-		{"subdomain user", "bob@sub.example.org", false},
-		{"domain as a suffix", "bob@notexample.org", false},
-		{"login without a domain", "bob", false},
+		{signAuthAligned, "own domain", "bob@example.org", true},
+		{signAuthAligned, "own domain, other case", "Bob@Example.ORG", true},
+		{signAuthAligned, "foreign From", "mallory@evil.example", false},
+		{signAuthAligned, "subdomain login", "bob@sub.example.org", false},
+		{signAuthAligned, "domain as a suffix", "bob@notexample.org", false},
+		{signAuthAligned, "login without a domain", "yarilo", false},
+		{signAuthAligned, "no login", "", false},
+		{signAuthAny, "foreign From", "yarilo-fwd@relay.example", true},
+		{signAuthAny, "login without a domain", "yarilo", true},
+		{signAuthAny, "no login", "", false},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.mode+"/"+tc.name, func(t *testing.T) {
 			before := testutil.ToFloat64(signResults.WithLabelValues("unauthorized"))
 			queries := tb.count()
-			cl := milter.NewClientWithOptions("tcp", ln.Addr().String(), milter.ClientOptions{
+			cl := milter.NewClientWithOptions("tcp", addr[tc.mode], milter.ClientOptions{
 				ActionMask: milter.OptAddHeader, ProtocolMask: milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo,
 				ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second,
 			})
@@ -1059,7 +1065,7 @@ func TestSigningNeedsAuthForTheFromDomain(t *testing.T) {
 
 // The login from one message does not carry into the next on the connection.
 func TestAuthDoesNotCarryOverToTheNextMessage(t *testing.T) {
-	s := &session{trusted: map[string]bool{}}
+	s := &session{signAuth: signAuthAligned}
 	m := &milter.Modifier{Macros: map[string]string{"{auth_authen}": "bob@example.org"}}
 	_, _ = s.MailFrom("<bob@example.org>", m)
 	if !s.mayUse("example.org") {
@@ -1071,16 +1077,23 @@ func TestAuthDoesNotCarryOverToTheNextMessage(t *testing.T) {
 	}
 }
 
-// TRUSTED_AUTH_USERS: comma-separated, case and spaces ignored.
-func TestTrustedAuthUsersFromTheEnvironment(t *testing.T) {
+// SIGN_AUTH: aligned by default, any accepted, anything else refused.
+func TestSignAuthFromTheEnvironment(t *testing.T) {
 	t.Setenv("DB_DSN", "x")
 	t.Setenv("KEY_DECRYPT", "none")
-	t.Setenv("TRUSTED_AUTH_USERS", " Relay-Submit , ,ops@example.net")
-	c, err := loadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(c.trusted) != 2 || !c.trusted["relay-submit"] || !c.trusted["ops@example.net"] {
-		t.Errorf("trusted = %v", c.trusted)
+	for _, tc := range []struct{ set, want string }{{"", signAuthAligned}, {"ANY", signAuthAny}, {"aligned", signAuthAligned}, {"none", ""}} {
+		if tc.set != "" {
+			t.Setenv("SIGN_AUTH", tc.set)
+		}
+		c, err := loadConfig()
+		if tc.want == "" {
+			if err == nil {
+				t.Errorf("SIGN_AUTH %q accepted", tc.set)
+			}
+			continue
+		}
+		if err != nil || c.signAuth != tc.want {
+			t.Errorf("SIGN_AUTH %q: %q %v, want %q", tc.set, c.signAuth, err, tc.want)
+		}
 	}
 }

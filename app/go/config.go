@@ -21,6 +21,13 @@ const (
 	defaultMilterRead  = 3600
 	defaultMilterWrite = 60
 	defaultSATokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+	// SIGN_AUTH: which authenticated clients have mail signed. aligned: a
+	// login whose domain is the From domain. any: every login, for a
+	// listener where only trusted accounts can authenticate. Without a
+	// login nothing is signed in either mode.
+	signAuthAligned = "aligned"
+	signAuthAny     = "any"
 )
 
 type config struct {
@@ -42,8 +49,7 @@ type config struct {
 	milterRead  time.Duration
 	milterWrite time.Duration
 
-	// trusted are SASL logins that may sign any domain in the table.
-	trusted map[string]bool
+	signAuth string
 }
 
 // defaultQueries read one domain's newest row, the domain compared without
@@ -122,11 +128,10 @@ func loadConfig() (config, error) {
 		return c, err
 	}
 	c.milterRead, c.milterWrite = time.Duration(read)*time.Second, time.Duration(write)*time.Second
-	c.trusted = map[string]bool{}
-	for _, u := range strings.Split(os.Getenv("TRUSTED_AUTH_USERS"), ",") {
-		if u = strings.ToLower(strings.TrimSpace(u)); u != "" {
-			c.trusted[u] = true
-		}
+	switch c.signAuth = strings.ToLower(env("SIGN_AUTH", signAuthAligned)); c.signAuth {
+	case signAuthAligned, signAuthAny:
+	default:
+		return c, fmt.Errorf("config: SIGN_AUTH %q: aligned or any", c.signAuth)
 	}
 	def, ok := defaultQueries[c.dbDriver]
 	if !ok {

@@ -30,8 +30,9 @@ var signedHeaders = []string{
 // session signs one message as it streams: the signer is made at the end of
 // the headers and the body goes straight into it, so no body is held.
 type session struct {
-	keys    *keyCache
-	trusted map[string]bool
+	keys *keyCache
+	// signAuth is SIGN_AUTH: aligned or any.
+	signAuth string
 	headers bytes.Buffer
 	from    string
 	queueID string
@@ -70,14 +71,15 @@ func (s *session) MailFrom(_ string, m *milter.Modifier) (milter.Response, error
 	return milter.RespContinue, nil
 }
 
-// mayUse says whether the client may have mail of domain signed: it logged
-// in as a user of that domain, or as one of TRUSTED_AUTH_USERS.
+// mayUse says whether the client may have mail of domain signed. Without
+// a login never; with SIGN_AUTH=any every login, the listener having let
+// in only the accounts it trusts; with aligned only a user of that domain.
 func (s *session) mayUse(domain string) bool {
 	login := strings.ToLower(s.authUser)
 	if login == "" {
 		return false
 	}
-	if s.trusted[login] {
+	if s.signAuth == signAuthAny {
 		return true
 	}
 	at := strings.LastIndexByte(login, '@')

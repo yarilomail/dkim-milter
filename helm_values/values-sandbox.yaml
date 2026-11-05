@@ -25,7 +25,8 @@ vault:
       name: yarilo-internal-ca
       kind: Issuer
 
-# The stand's Calico enforces it; relay-mta and relay-fwd run the milter.
+# The stand's Calico enforces it; only relay-mta runs the milter (relay-fwd
+# signs nothing: yarilo-postfix 0.1.8 drops it from that chain).
 networkPolicy:
   enabled: true
   postfix:
@@ -33,4 +34,4 @@ networkPolicy:
       matchExpressions:
         - key: app
           operator: In
-          values: [relay-mta, relay-fwd]
+          values: [relay-mta]

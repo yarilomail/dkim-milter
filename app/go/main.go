@@ -90,11 +90,11 @@ func waitReady(ctx context.Context, fetch func(context.Context, string) (row, bo
 }
 
 // newMilterServer is the milter listener's server: one session per
-// connection, adding only the signature header, signing only for a client
-// that authenticated for the From domain or as a trusted login.
+// connection, adding only the signature header, signing only for an
+// authenticated client as SIGN_AUTH allows.
 func newMilterServer(cfg config, cache *keyCache) *milter.Server {
 	return &milter.Server{
-		NewMilter: func() milter.Milter { return &session{keys: cache, trusted: cfg.trusted} },
+		NewMilter: func() milter.Milter { return &session{keys: cache, signAuth: cfg.signAuth} },
 		Actions:   milter.OptAddHeader,
 		Protocol:  milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo,
 		// Bounds a connection that stops talking; the library also refuses

@@ -24,9 +24,14 @@ Licensed under **AGPLv3**, see [LICENSE](LICENSE).
 
 ## Who may have mail signed
 
-A key is used only when the client logged in with SASL and Postfix's `{auth_authen}` is a user of the `From:` domain (`bob@example.org` for `From: alice@example.org`; case ignored, a subdomain is another domain), or is one of `TRUSTED_AUTH_USERS`. Any other message (no login, a login of another domain, mail from a local `sendmail`) is accepted unsigned with the log line `dkim: not signed, the client may not sign for the From domain` and counted as `unauthorized`; its key is not even read. There is no setting to sign without a login: a signer that signs whatever reaches its port would sign for anyone who reaches Postfix.
+Only a client that logged in with SASL has mail signed; Postfix's `{auth_authen}` says who. `SIGN_AUTH` sets which logins:
 
-On the yarilo stand yarilo logs in to `relay-mta`'s submission listener as the sending user, and Postfix's `sasl_username` (hence `{auth_authen}`) is that user's address, e.g. `u51@d00002.test`. Postfix sends `{auth_authen}` with `MAIL FROM` by default (`milter_mail_macros`).
+- `aligned` (default): the login's domain is the `From:` domain (`bob@example.org` for `From: alice@example.org`; case ignored, a subdomain is another domain).
+- `any`: every login, `From:` not compared. For a listener where only trusted accounts can authenticate, so the listener has already done the check.
+
+Any other message (no login, a login of another domain under `aligned`, mail from a local `sendmail`) is accepted unsigned with the log line `dkim: not signed, the client may not sign for the From domain` and counted as `unauthorized`; its key is not even read. In neither mode is mail signed without a login, and there is no setting for it: a signer that signs whatever reaches its port would sign for anyone who reaches Postfix.
+
+On the yarilo stand only `relay-mta` runs this milter, with `aligned`: yarilo logs in to its submission listener as the sending user, and Postfix's `sasl_username` (hence `{auth_authen}`) is that user's address, e.g. `u51@d00002.test`. Postfix sends `{auth_authen}` with `MAIL FROM` by default (`milter_mail_macros`).
 
 ## Keys
 
@@ -103,7 +108,7 @@ milter_default_action = tempfail
 | `DKIM_SQL_QUERY` | `SELECT domain, selector, private_key_enc FROM dkim WHERE lower(trim(domain)) = $1 ORDER BY created_at DESC, id DESC LIMIT 1` (`?` for mysql) | one domain's row: domain, selector, stored private key; one placeholder, the lower-case domain |
 | `MILTER_READ_TIMEOUT_SECONDS` | `3600` | a milter connection silent this long is closed; Postfix keeps one per SMTP session and is silent on it while the client sends |
 | `MILTER_WRITE_TIMEOUT_SECONDS` | `60` | a reply Postfix does not take this long closes the connection |
-| `TRUSTED_AUTH_USERS` | --- | comma-separated SASL logins that may have any domain signed |
+| `SIGN_AUTH` | `aligned` | `aligned`: a login of the From domain; `any`: every login |
 | `KEY_DECRYPT` | `vault` | `vault`: the column is Vault Transit ciphertext; `none`: the column is PEM (logged as a warning) |
 | `KEY_CACHE_SIZE` | `10000` | keys held, least recently used dropped first |
 | `KEY_CACHE_TTL_SECONDS` | `600` | a cached key is read again after this |
@@ -143,7 +148,7 @@ Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selec
 | `db.query` | --- (the driver's default) | as `DKIM_SQL_QUERY` |
 | `db.maxOpenConns` | `10` | as `DB_MAX_OPEN_CONNS` |
 | `keyDecrypt` | `vault` | `vault` or `none` |
-| `trustedAuthUsers` | `[]` | as `TRUSTED_AUTH_USERS` |
+| `signAuth` | `aligned` | as `SIGN_AUTH` |
 | `keyCache.size` / `.ttlSeconds` / `.missTtlSeconds` | `10000` / `600` / `60` | as `KEY_CACHE_SIZE`, `KEY_CACHE_TTL_SECONDS`, `KEY_CACHE_MISS_TTL_SECONDS` |
 | `resources.limits.memory` | `128Mi` | room for `keyCache.size` keys, see Keys |
 | `vault.addr`, `vault.role` | --- | required with `vault` |
@@ -154,7 +159,7 @@ Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selec
 
 The chart's defaults are the code's; a test holds them equal.
 
-The NetworkPolicy is enforced only by a CNI that implements it: Calico (the stand), Cilium, or the kube-router built into k3s (keptemail). With flannel alone it is accepted and ignored. Both values files enable it for yarilo-postfix's `relay-mta` and `relay-fwd` in the same namespace.
+The NetworkPolicy is enforced only by a CNI that implements it: Calico (the stand), Cilium, or the kube-router built into k3s (keptemail). With flannel alone it is accepted and ignored. Both values files enable it for yarilo-postfix's `relay-mta` in the same namespace, the only Postfix that runs this milter.
 
 The stand installs it with `helm upgrade` in `yarilo-relay`, beside yarilo-postfix; keptemail's ArgoCD application lives in `k8s_keptemail` with the cluster's other applications. The chart creates the ServiceAccount `dkim-milter`; its token is mounted only with `keyDecrypt: vault`. `helm_values/values-sandbox.yaml` reads the yarilo stand's MySQL table with Vault Transit ciphertext in `private_key_enc`, from the stand's Vault over TLS; `helm_values/values-keptemail.yaml` reads PostgreSQL with Vault Transit.
 
@@ -201,7 +206,7 @@ kubectl create secret generic dkim-milter-db -n <namespace> \
 
 ## Build and release
 
-`app/go`, Go 1.27. `go test ./...` covers signing and verification for RSA and Ed25519, the From oversigning, key parsing, who may have mail signed (the login's domain, trusted logins, no login), the key cache (hits, shared misses, the expired key served while it is read again, selector rotation, keyless domains, eviction, a failed refresh of an evicted entry, Vault or the database down), Vault Transit with its kept token and the decrypt check, readiness on the key query, the milter read timeout, the chart's defaults against the code's, and a full milter conversation. Work lands on `develop` through pull requests; `main` takes releases only. Both branches accept changes by pull request alone, with Lint and Test green, no force-push and no deletion.
+`app/go`, Go 1.27. `go test ./...` covers signing and verification for RSA and Ed25519, the From oversigning, key parsing, who may have mail signed (`aligned`, `any`, no login), the key cache (hits, shared misses, the expired key served while it is read again, selector rotation, keyless domains, eviction, a failed refresh of an evicted entry, Vault or the database down), Vault Transit with its kept token and the decrypt check, readiness on the key query, the milter read timeout, the chart's defaults against the code's, and a full milter conversation. Work lands on `develop` through pull requests; `main` takes releases only. Both branches accept changes by pull request alone, with Lint and Test green, no force-push and no deletion.
 
 - `develop` carries `-dev.N` in `helm/Chart.yaml` (both `version` and `appVersion`, bumped in the PR that changes the image). Each merge builds the image tagged with the commit, `develop` and the `-dev.N` version.
 - A merge of `develop` into `main` with a release version builds the image tagged with the commit, `latest` and `v<version>`, and creates the GitHub release with notes from git-cliff.

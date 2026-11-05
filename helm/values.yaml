@@ -51,10 +51,10 @@ db:
   # past its TTL in the background, takes one.
   maxOpenConns: 10
 
-# A message is signed only when the client logged in (SASL) as a user of
-# the From domain. These logins may have any domain signed: a relay that
-# submits for many domains under one login. Empty: none.
-trustedAuthUsers: []
+# Which authenticated clients have mail signed; without a SASL login
+# nothing is signed. aligned: the login's domain is the From domain.
+# any: every login, for a listener where only trusted accounts can log in.
+signAuth: aligned
 
 # vault: the column holds Vault Transit ciphertext; none: the column holds PEM.
 keyDecrypt: vault
