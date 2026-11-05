@@ -1,10 +1,14 @@
 # The stand's second release, dkim-milter-fwd, for relay-fwd's submission
-# listener (587): only yarilo's technical account logs in there, so every
-# authenticated message is yarilo's own (vacation, notify, reports) and is
-# signed with its From domain's key. On top of values-sandbox.yaml:
+# listener (587): only yarilo's technical account logs in there. Its own
+# mail (vacation, notify, reports) is signed with its From domain's key, a
+# redirect with the forwarder's. On top of values-sandbox.yaml:
 #   helm upgrade --install dkim-milter-fwd helm -n yarilo-relay \
 #     -f helm_values/values-sandbox.yaml -f helm_values/values-sandbox-fwd.yaml
 signAuth: any
+
+# Forwarded mail (a Sieve redirect) is signed d=fwd.d00001.test, yarilo's own
+# mail with its From domain's key.
+signDomain: fwd.d00001.test
 
 vault:
   # A Secret of this release's own: two releases cannot own one Certificate.

@@ -34,7 +34,28 @@ Any other message (no login, a login of another domain under `aligned`, mail fro
 yarilo-postfix runs two releases:
 
 - `dkim-milter` with `aligned` for `relay-mta`. yarilo logs in to its submission listener as the sending user, so Postfix's `sasl_username` (hence `{auth_authen}`) is that user's address, e.g. `u51@d00002.test` on the stand.
-- `dkim-milter-fwd` with `any` for `relay-fwd`'s submission listener (587). Only yarilo's technical account logs in there, so every authenticated message is yarilo's own (vacation, notify, reports) and is signed with its From domain's key.
+- `dkim-milter-fwd` with `any` and `SIGN_DOMAIN` for `relay-fwd`'s submission listener (587). Only yarilo's technical account logs in there; see below which key signs what.
+
+## Forwarded mail
+
+`relay-fwd` carries two kinds of mail: messages yarilo makes (vacation, notify, reports) and messages it passes on (a Sieve `redirect`). A redirected copy did not come from its author's domain, so that domain's key must not sign it. With `SIGN_DOMAIN` (values `signDomain`) set, the milter tells the two apart by the `Received` fields:
+
+- Postfix does not pass the milter the `Received` it adds itself (MILTER_README, Details: hidden for Sendmail compatibility). A message with no `Received` was made by yarilo and is signed with its `From` domain's key.
+- A message with any `Received` was forwarded: it came in through another hop (the inbound MX, yarilo's LMTP delivery, the user's submission). It is signed with `SIGN_DOMAIN`'s key, `d=` that domain, whatever its `From` says. The author's own signature, if any, stays as it was.
+
+Seen on the stand (docs-internal#266), the milter gets no `Received` with a vacation reply, three with a redirect of an external message and four with a redirect of the user's own mail. A wrong call can only go one way: yarilo writes the headers of its own mail, so a `Received` there is never forged, and a misread message gets the forwarder's key, never the user's.
+
+A login is still required, and `SIGN_DOMAIN` needs its own row in the `dkim` table (selector and key as for any domain) plus its DNS record. Without a row, forwarded mail goes unsigned as `no_key`. Without `SIGN_DOMAIN` the `Received` fields change nothing.
+
+`SIGN_DOMAIN` belongs only on the listener where yarilo's Sieve sender logs in. Never set it on a listener for mail clients: a client's own MTA, a smarthost or yarilo's submission adds a `Received`, and the user's mail would be signed with the forwarder's key. On those listeners `aligned` decides by the login alone.
+
+On a single host one Postfix takes every role, with the milter set per listener in `master.cf` (`-o smtpd_milters=...`):
+
+| Listener | Who connects | Signer |
+|:---|:---|:---|
+| 587, 465 | mail clients, SASL login | `dkim-milter`, `aligned`, no `SIGN_DOMAIN` |
+| yarilo's Sieve sender (submission, its technical account) | yarilo only | `dkim-milter-fwd`, `any`, `SIGN_DOMAIN` |
+| 25 | inbound mail | none |
 
 `relay-fwd`'s port 25 runs no signer. Postfix sends `{auth_authen}` with `MAIL FROM` by default (`milter_mail_macros`).
 
@@ -114,6 +135,7 @@ milter_default_action = tempfail
 | `MILTER_READ_TIMEOUT_SECONDS` | `3600` | a milter connection silent this long is closed; Postfix keeps one per SMTP session and is silent on it while the client sends |
 | `MILTER_WRITE_TIMEOUT_SECONDS` | `60` | a reply Postfix does not take this long closes the connection |
 | `SIGN_AUTH` | `aligned` | `aligned`: a login of the From domain; `any`: every login |
+| `SIGN_DOMAIN` | --- | the forwarder's domain: forwarded mail is signed with its key (see Forwarded mail) |
 | `KEY_DECRYPT` | `vault` | `vault`: the column is Vault Transit ciphertext; `none`: the column is PEM (logged as a warning) |
 | `KEY_CACHE_SIZE` | `10000` | keys held, least recently used dropped first |
 | `KEY_CACHE_TTL_SECONDS` | `600` | a cached key is read again after this |
@@ -154,6 +176,7 @@ Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selec
 | `db.maxOpenConns` | `10` | as `DB_MAX_OPEN_CONNS` |
 | `keyDecrypt` | `vault` | `vault` or `none` |
 | `signAuth` | `aligned` | as `SIGN_AUTH` |
+| `signDomain` | `""` | as `SIGN_DOMAIN`; the `-fwd` overlays set `fwd.d00001.test` (stand) and `fwd.keptemail.com` |
 | `keyCache.size` / `.ttlSeconds` / `.missTtlSeconds` | `10000` / `600` / `60` | as `KEY_CACHE_SIZE`, `KEY_CACHE_TTL_SECONDS`, `KEY_CACHE_MISS_TTL_SECONDS` |
 | `resources.limits.memory` | `128Mi` | room for `keyCache.size` keys, see Keys |
 | `vault.addr`, `vault.role` | --- | required with `vault` |

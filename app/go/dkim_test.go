@@ -28,8 +28,8 @@ import (
 	"time"
 
 	"github.com/0kaba0hub/go-milter"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/emersion/go-msgauth/dkim"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func rsaKey(t *testing.T) *rsa.PrivateKey {
@@ -963,6 +963,12 @@ func TestChartDefaultsMatchTheCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if v, ok := values["signDomain"]; !ok || v != `""` {
+		t.Errorf("signDomain = %q in values.yaml, want empty (off)", v)
+	}
+	if !regexp.MustCompile(`\{\{- with \.Values\.signDomain \}\}\n\s+- name: SIGN_DOMAIN\n\s+value: \{\{ \. \| quote \}\}`).Match(tmpl) {
+		t.Error("deployment.yaml does not pass signDomain as SIGN_DOMAIN")
+	}
 	for _, tc := range []struct {
 		value, env string
 		want       int
@@ -1116,6 +1122,177 @@ func TestChartNamesFollowTheRelease(t *testing.T) {
 				continue // the container's name, not a resource
 			}
 			t.Errorf("%s: %q is fixed, not {{ .Release.Name }}", filepath.Base(f), strings.TrimSpace(string(m)))
+		}
+	}
+}
+
+// Received fields a redirected message brings to relay-fwd, as the stand
+// shows them (docs-internal#266). Postfix does not pass the milter the
+// Received it adds itself, so yarilo's own mail arrives with none.
+const (
+	lmtpReceived   = "from ext@example.net by mail.example.org with LMTP; Thu, 05 Nov 2026 21:11:57 +0000"
+	mxReceived     = "from ext-sender.example.net (relay-mta [10.1.114.46])\n\tby relay.example.org (Postfix) with ESMTP id D036B1E0229"
+	mtaReceived    = "from mail.example.org (yarilo-backend-1 [10.1.114.14])\n\tby relay.example.org (Postfix) with ESMTPSA id C9876201C83"
+	submitReceived = "from client.example ([127.0.0.1])\n\tby yarilo with ESMTPA; Thu, 05 Nov 2026 21:16:31 +0000"
+)
+
+// With SIGN_DOMAIN set, a message with any Received was forwarded and is
+// signed d=SIGN_DOMAIN; one without is yarilo's and is signed with its From
+// domain. A login is needed either way.
+// Without SIGN_DOMAIN the Received fields change nothing.
+func TestForwardedMailSignsWithTheSignDomain(t *testing.T) {
+	const fwd = "fwd.example.org"
+	user, relay := edKey(t), edKey(t)
+	tb := &table{rows: map[string]row{
+		"example.org": {"example.org", "s1", pkcs8PEM(t, user)},
+		fwd:           {fwd, "s1", pkcs8PEM(t, relay)},
+	}}
+	c, _ := newTestCache(tb, plainKeys{}, 10)
+	records := map[string]string{"s1._domainkey.example.org": txtRecord(t, user), "s1._domainkey." + fwd: txtRecord(t, relay)}
+	noKey, _ := newTestCache(&table{rows: map[string]row{"example.org": {"example.org", "s1", pkcs8PEM(t, user)}}}, plainKeys{}, 10)
+	addr := map[string]string{}
+	for name, srvCfg := range map[string]struct {
+		domain string
+		keys   *keyCache
+	}{"fwd": {fwd, c}, "off": {"", c}, "fwd-no-key": {fwd, noKey}} {
+		ln, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := newMilterServer(config{milterRead: time.Minute, milterWrite: time.Minute, signAuth: signAuthAny, signDomain: srvCfg.domain}, srvCfg.keys)
+		go func() { _ = srv.Serve(ln) }()
+		t.Cleanup(func() { _ = srv.Close() })
+		addr[name] = ln.Addr().String()
+	}
+	for _, tc := range []struct {
+		srv, name, auth, from string
+		received              []string
+		want                  string // the signing domain, "" for unsigned
+		result                string
+	}{
+		{"fwd", "vacation", "yarilo", "u1@example.org", nil, "example.org", "signed"},
+		{"fwd", "redirect of an external message", "yarilo", "ext@example.net", []string{lmtpReceived, mxReceived}, fwd, "signed"},
+		{"fwd", "redirect of own mail to itself", "yarilo", "u1@example.org", []string{lmtpReceived, mtaReceived, submitReceived}, fwd, "signed"},
+		{"fwd", "one foreign Received", "yarilo", "u1@example.org", []string{mxReceived}, fwd, "signed"},
+		{"fwd", "redirect without a login", "", "ext@example.net", []string{lmtpReceived, mxReceived}, "", "unauthorized"},
+		{"fwd", "vacation without a login", "", "u1@example.org", nil, "", "unauthorized"},
+		{"fwd", "redirect without a From", "yarilo", "", []string{lmtpReceived, mxReceived}, "", "no_from"},
+		{"off", "redirect, SIGN_DOMAIN unset", "yarilo", "u1@example.org", []string{lmtpReceived, mxReceived}, "example.org", "signed"},
+		{"off", "redirect of a foreign From, SIGN_DOMAIN unset", "yarilo", "ext@example.net", []string{lmtpReceived, mxReceived}, "", "no_key"},
+		{"fwd-no-key", "redirect, no row for SIGN_DOMAIN", "yarilo", "u1@example.org", []string{lmtpReceived, mxReceived}, "", "no_key"},
+	} {
+		t.Run(tc.srv+"/"+tc.name, func(t *testing.T) {
+			before := testutil.ToFloat64(signResults.WithLabelValues(tc.result))
+			cl := milter.NewClientWithOptions("tcp", addr[tc.srv], milter.ClientOptions{
+				ActionMask: milter.OptAddHeader, ProtocolMask: milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo,
+				ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second,
+			})
+			t.Cleanup(func() { _ = cl.Close() })
+			sess, err := cl.Session()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = sess.Close() }()
+			if tc.auth != "" {
+				if err := sess.Macros(milter.CodeMail, "{auth_authen}", tc.auth); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := sess.Mail("<>", nil); err != nil {
+				t.Fatal(err)
+			}
+			var hdr strings.Builder
+			field := func(name, value string) {
+				if _, err := sess.HeaderField(name, value); err != nil {
+					t.Fatal(err)
+				}
+				fmt.Fprintf(&hdr, "%s: %s\r\n", name, strings.ReplaceAll(value, "\n", "\r\n"))
+			}
+			for _, r := range tc.received {
+				field("Received", r)
+			}
+			if tc.from != "" {
+				field("From", tc.from)
+			}
+			field("To", "bob@example.net")
+			field("Subject", "hello")
+			eoh, err := sess.HeaderEnd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" {
+				if eoh.Code != milter.ActAccept {
+					t.Errorf("end of headers answered %c, want accept unsigned", eoh.Code)
+				}
+			} else {
+				mods, _, err := sess.BodyReadFrom(strings.NewReader(testBody))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var sig []string
+				for _, m := range mods {
+					if m.Code == milter.ActInsertHeader && m.HeaderName == "DKIM-Signature" {
+						sig = append(sig, m.HeaderValue)
+					}
+				}
+				if len(sig) != 1 {
+					t.Fatalf("want one DKIM-Signature, got %+v", mods)
+				}
+				msg := "DKIM-Signature: " + strings.ReplaceAll(sig[0], "\n", "\r\n") + "\r\n" + hdr.String() + "\r\n" + testBody
+				vs, err := dkim.VerifyWithOptions(strings.NewReader(msg), &dkim.VerifyOptions{
+					LookupTXT: func(name string) ([]string, error) { return []string{records[name]}, nil },
+				})
+				if err != nil || len(vs) != 1 || vs[0].Err != nil {
+					t.Fatalf("signature does not verify: %v %+v", err, vs)
+				}
+				if vs[0].Domain != tc.want {
+					t.Errorf("signed d=%s, want d=%s", vs[0].Domain, tc.want)
+				}
+			}
+			if moved := testutil.ToFloat64(signResults.WithLabelValues(tc.result)) - before; moved != 1 {
+				t.Errorf("%s counter moved by %v", tc.result, moved)
+			}
+		})
+	}
+}
+
+// The Received count of one message does not carry into the next.
+func TestReceivedDoesNotCarryOverToTheNextMessage(t *testing.T) {
+	s := &session{signDomain: "fwd.example.org"}
+	_, _ = s.MailFrom("<>", &milter.Modifier{Macros: map[string]string{}})
+	_, _ = s.Header("Received", mxReceived, nil)
+	if !s.forwarded() {
+		t.Fatal("a message with a Received is not forwarded")
+	}
+	_, _ = s.MailFrom("<>", &milter.Modifier{Macros: map[string]string{}})
+	_, _ = s.Header("Subject", "hello", nil)
+	if s.forwarded() {
+		t.Error("the previous message's Received still count")
+	}
+}
+
+// SIGN_DOMAIN: unset is off, a domain is kept in lower case, anything else
+// is refused.
+func TestSignDomainFromTheEnvironment(t *testing.T) {
+	t.Setenv("DB_DSN", "x")
+	t.Setenv("KEY_DECRYPT", "none")
+	for _, tc := range []struct {
+		set, want string
+		ok        bool
+	}{
+		{"", "", true},
+		{"fwd.example.org", "fwd.example.org", true},
+		{" Fwd.Example.ORG ", "fwd.example.org", true},
+		{"example", "", false},
+		{"user@fwd.example.org", "", false},
+		{"fwd..example.org", "", false},
+		{"-fwd.example.org", "", false},
+		{"fwd.example.org.", "", false},
+	} {
+		t.Setenv("SIGN_DOMAIN", tc.set)
+		c, err := loadConfig()
+		if (err == nil) != tc.ok || tc.ok && c.signDomain != tc.want {
+			t.Errorf("SIGN_DOMAIN %q: %q %v, want %q ok=%v", tc.set, c.signDomain, err, tc.want, tc.ok)
 		}
 	}
 }

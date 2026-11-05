@@ -1,8 +1,12 @@
 # keptemail's second release, dkim-milter-fwd, for relay-fwd's submission
-# listener (587), where only yarilo's technical account logs in: every
-# authenticated message is yarilo's own and is signed with its From domain's
-# key. On top of values-keptemail.yaml.
+# listener (587), where only yarilo's technical account logs in: its own
+# mail is signed with its From domain's key, a redirect with the
+# forwarder's. On top of values-keptemail.yaml.
 signAuth: any
+
+# Forwarded mail (a Sieve redirect) is signed d=fwd.keptemail.com, yarilo's own
+# mail with its From domain's key.
+signDomain: fwd.keptemail.com
 
 networkPolicy:
   postfix:

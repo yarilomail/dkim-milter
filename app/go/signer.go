@@ -33,9 +33,14 @@ type session struct {
 	keys *keyCache
 	// signAuth is SIGN_AUTH: aligned or any.
 	signAuth string
-	headers bytes.Buffer
-	from    string
-	queueID string
+	// signDomain is SIGN_DOMAIN, empty when forwarded mail is not told apart.
+	signDomain string
+	headers    bytes.Buffer
+	// received counts the Received fields the message came with. Postfix
+	// does not pass the one it adds itself.
+	received int
+	from     string
+	queueID  string
 	// authUser is the SASL login ({auth_authen}) of the client, empty when
 	// the client did not authenticate.
 	authUser string
@@ -51,6 +56,7 @@ func (s *session) reset() {
 	}
 	s.headers.Reset()
 	s.from, s.queueID, s.authUser = "", "", ""
+	s.received = 0
 	s.signer, s.key, s.err = nil, key{}, nil
 }
 
@@ -98,7 +104,18 @@ func (s *session) Header(name, value string, _ *milter.Modifier) (milter.Respons
 	if strings.EqualFold(name, "From") && s.from == "" {
 		s.from = value
 	}
+	if strings.EqualFold(name, "Received") {
+		s.received++
+	}
 	return milter.RespContinue, nil
+}
+
+// forwarded says whether the message passed another hop before this one.
+// Postfix hides its own Received from milters, so a message yarilo made
+// (vacation, notify, reports) arrives with none, and a redirected one with
+// the hops it came in by.
+func (s *session) forwarded() bool {
+	return s.signDomain != "" && s.received > 0
 }
 
 // Headers picks the key; a message that will not be signed is accepted here,
@@ -107,12 +124,22 @@ func (s *session) Headers(_ textproto.MIMEHeader, m *milter.Modifier) (milter.Re
 	s.queueID = m.Macros["i"]
 	domain := fromDomain(s.from)
 	log := slog.With("queue_id", s.queueID, "domain", domain)
-	if domain == "" {
+	allowed := false
+	switch {
+	case domain == "":
 		signResults.WithLabelValues("no_from").Inc()
 		log.Info("dkim: not signed, no From domain")
 		return milter.RespAccept, nil
+	case s.forwarded():
+		// The forwarder's own domain signs: the author's domain did not send
+		// this copy, and its key must not vouch for what another host passed.
+		domain = s.signDomain
+		log = slog.With("queue_id", s.queueID, "domain", domain, "forwarded", true)
+		allowed = s.authUser != ""
+	default:
+		allowed = s.mayUse(domain)
 	}
-	if !s.mayUse(domain) {
+	if !allowed {
 		signResults.WithLabelValues("unauthorized").Inc()
 		log.Warn("dkim: not signed, the client may not sign for the From domain", "auth_user", s.authUser)
 		return milter.RespAccept, nil
