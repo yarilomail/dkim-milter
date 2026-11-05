@@ -118,11 +118,23 @@ Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selec
 | `vault.addr`, `vault.role` | --- | required with `vault` |
 | `vault.authPath`, `.transitPath`, `.transitKey` | `kubernetes`, `transit`, `dkim` | mounts and key |
 | `vault.caCertSecret` | --- | Secret with `ca.crt` |
+| `vault.caCertificate.issuerRef.name` / `.kind` | --- / `Issuer` | with a name, the chart makes a cert-manager Certificate that writes `vault.caCertSecret`, whose `ca.crt` is that issuer's CA |
 | `logLevel` | --- | `debug` |
 
-The stand installs it with `helm upgrade` in `yarilo-relay`, beside yarilo-postfix; keptemail's ArgoCD application lives in `k8s_keptemail` with the cluster's other applications. The chart creates the ServiceAccount `dkim-milter`; its token is mounted only with `keyDecrypt: vault`. `helm_values/values-sandbox.yaml` reads the yarilo stand's MySQL table with keys in the clear; `helm_values/values-keptemail.yaml` reads PostgreSQL with Vault Transit.
+The stand installs it with `helm upgrade` in `yarilo-relay`, beside yarilo-postfix; keptemail's ArgoCD application lives in `k8s_keptemail` with the cluster's other applications. The chart creates the ServiceAccount `dkim-milter`; its token is mounted only with `keyDecrypt: vault`. `helm_values/values-sandbox.yaml` reads the yarilo stand's MySQL table with Vault Transit ciphertext in `private_key_enc`, from the stand's Vault over TLS; `helm_values/values-keptemail.yaml` reads PostgreSQL with Vault Transit.
 
-The DSN Secret:
+### The stand
+
+The stand's Vault (seconddns/k8s_vault, namespace `vault`) is signed by the Issuer `yarilo-internal-ca`, which also exists in `yarilo-relay`; the chart's Certificate `dkim-milter-vault-ca` takes its `ca.crt` from there. The DSN Secret is made once from the parts of yarilo-postfix's `yarilo-mysql`, with the host OpenDKIM uses (that Secret's own `dsn` key names a host that no longer resolves):
+
+```sh
+g() { kubectl -n yarilo-relay get secret yarilo-mysql -o jsonpath="{.data.$1}" | base64 -d; }
+kubectl -n yarilo-relay create secret generic dkim-milter-db \
+  --from-literal=DB_DSN="$(g MYSQL_USER):$(g MYSQL_PASSWORD)@tcp(mysql.db.svc.cluster.local:3306)/$(g MYSQL_DATABASE)?parseTime=true&charset=utf8mb4"
+helm upgrade --install dkim-milter helm -n yarilo-relay -f helm_values/values-sandbox.yaml
+```
+
+The DSN Secret elsewhere:
 
 ```sh
 kubectl create secret generic dkim-milter-db -n <namespace> \
