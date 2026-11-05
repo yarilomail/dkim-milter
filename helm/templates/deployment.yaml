@@ -64,6 +64,10 @@ spec:
             {{- end }}
             - name: SIGN_AUTH
               value: {{ .Values.signAuth | quote }}
+            {{- with .Values.signDomain }}
+            - name: SIGN_DOMAIN
+              value: {{ . | quote }}
+            {{- end }}
             - name: KEY_DECRYPT
               value: {{ .Values.keyDecrypt | quote }}
             - name: KEY_CACHE_SIZE

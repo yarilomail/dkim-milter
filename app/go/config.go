@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,9 @@ const (
 	signAuthAny     = "any"
 )
 
+// validSignDomain is a domain name: labels of letters, digits and hyphens.
+var validSignDomain = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+
 type config struct {
 	listenAddr  string
 	metricsAddr string
@@ -50,6 +54,9 @@ type config struct {
 	milterWrite time.Duration
 
 	signAuth string
+	// signDomain is SIGN_DOMAIN: when set, a forwarded message is signed
+	// with this domain's key instead of its From domain's.
+	signDomain string
 }
 
 // defaultQueries read one domain's newest row, the domain compared without
@@ -132,6 +139,10 @@ func loadConfig() (config, error) {
 	case signAuthAligned, signAuthAny:
 	default:
 		return c, fmt.Errorf("config: SIGN_AUTH %q: aligned or any", c.signAuth)
+	}
+	c.signDomain = strings.ToLower(strings.TrimSpace(os.Getenv("SIGN_DOMAIN")))
+	if c.signDomain != "" && !validSignDomain.MatchString(c.signDomain) {
+		return c, fmt.Errorf("config: SIGN_DOMAIN %q: a domain name", c.signDomain)
 	}
 	def, ok := defaultQueries[c.dbDriver]
 	if !ok {

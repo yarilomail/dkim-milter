@@ -41,7 +41,7 @@ Postfix milter in Go that DKIM-signs each message with the key of its `From:` do
 dkim-milter/
 |- app/go/          main.go config.go keys.go vault.go signer.go metrics.go, tests, Dockerfile
 |- helm/            chart: Deployment, Service, ServiceAccount, NetworkPolicy, Vault CA Certificate
-|- helm_values/     values-sandbox.yaml (MySQL, Vault), values-keptemail.yaml (PostgreSQL, Vault), *-fwd.yaml (second release, SIGN_AUTH any)
+|- helm_values/     values-sandbox.yaml (MySQL, Vault), values-keptemail.yaml (PostgreSQL, Vault), *-fwd.yaml (second release, SIGN_AUTH any, SIGN_DOMAIN)
 |- schema/          postgres.sql, mysql.sql
 `- doc/             this document, architecture diagram
 ```
@@ -50,7 +50,7 @@ dkim-milter/
 
 | Part | What |
 |:---|:---|
-| milter session | signs only for a SASL-authenticated client: one of the From domain (`SIGN_AUTH=aligned`) or any (`any`); collects headers and body, signs at end of message, inserts `DKIM-Signature` at the top |
+| milter session | signs only for a SASL-authenticated client: one of the From domain (`SIGN_AUTH=aligned`) or any (`any`); collects headers and body, signs at end of message, inserts `DKIM-Signature` at the top; with `SIGN_DOMAIN`, a message with a `Received` under the hop's own is signed with that domain's key |
 | key cache | loads a domain's newest row on its first message, LRU of `KEY_CACHE_SIZE`; past the TTL the key signs on while the row is read again in the background; tempfail only for an uncached domain while the database or Vault is down |
 | Vault client | Kubernetes login with the ServiceAccount token, kept until four fifths of its TTL; one decrypt per load |
 | metrics | `/healthz`, `/readyz` (the key query runs and the token may decrypt), `/metrics` |
@@ -65,6 +65,7 @@ dkim-milter/
 | `MILTER_READ_TIMEOUT_SECONDS` / `MILTER_WRITE_TIMEOUT_SECONDS` | `3600` / `60` | milter connection timeouts |
 | `KEY_DECRYPT` | `vault` | `vault` or `none` |
 | `SIGN_AUTH` | `aligned` | `aligned` or `any`; no login, no signature |
+| `SIGN_DOMAIN` | --- | forwarder's domain for forwarded mail |
 | `KEY_CACHE_SIZE` / `KEY_CACHE_TTL_SECONDS` / `KEY_CACHE_MISS_TTL_SECONDS` | `10000` / `600` / `60` | key cache |
 | `VAULT_ADDR` / `VAULT_ROLE` | --- | required with `vault` |
 | `VAULT_AUTH_PATH` / `VAULT_TRANSIT_PATH` / `VAULT_TRANSIT_KEY` | `kubernetes` / `transit` / `dkim` | mounts and key |
