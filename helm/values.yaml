@@ -56,11 +56,11 @@ db:
 # any: every login, for a listener where only trusted accounts can log in.
 signAuth: aligned
 
-# The forwarder's domain. Empty: every message is signed with its From
-# domain's key. Set: a message with a Received under this hop's own one was
-# forwarded (a Sieve redirect) and is signed with this domain's key, d= this
-# domain; a message with only this hop's Received keeps its From domain's
-# key. The domain needs its own row in the dkim table.
+# The forwarder's domain, only for the listener where yarilo's Sieve sender
+# logs in. Empty: every message is signed with its From domain's key. Set:
+# a message that brings any Received (Postfix hides its own) was forwarded
+# (a Sieve redirect) and is signed d= this domain with its own row in the
+# dkim table; a message with none, yarilo's own, keeps its From domain's key.
 signDomain: ""
 
 # vault: the column holds Vault Transit ciphertext; none: the column holds PEM.

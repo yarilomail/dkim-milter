@@ -50,7 +50,7 @@ dkim-milter/
 
 | Part | What |
 |:---|:---|
-| milter session | signs only for a SASL-authenticated client: one of the From domain (`SIGN_AUTH=aligned`) or any (`any`); collects headers and body, signs at end of message, inserts `DKIM-Signature` at the top; with `SIGN_DOMAIN`, a message with a `Received` under the hop's own is signed with that domain's key |
+| milter session | signs only for a SASL-authenticated client: one of the From domain (`SIGN_AUTH=aligned`) or any (`any`); collects headers and body, signs at end of message, inserts `DKIM-Signature` at the top; with `SIGN_DOMAIN`, a message that brings any `Received` (Postfix hides its own) is signed with that domain's key |
 | key cache | loads a domain's newest row on its first message, LRU of `KEY_CACHE_SIZE`; past the TTL the key signs on while the row is read again in the background; tempfail only for an uncached domain while the database or Vault is down |
 | Vault client | Kubernetes login with the ServiceAccount token, kept until four fifths of its TTL; one decrypt per load |
 | metrics | `/healthz`, `/readyz` (the key query runs and the token may decrypt), `/metrics` |

@@ -40,12 +40,22 @@ yarilo-postfix runs two releases:
 
 `relay-fwd` carries two kinds of mail: messages yarilo makes (vacation, notify, reports) and messages it passes on (a Sieve `redirect`). A redirected copy did not come from its author's domain, so that domain's key must not sign it. With `SIGN_DOMAIN` (values `signDomain`) set, the milter tells the two apart by the `Received` fields:
 
-- Postfix hands the milter its own `Received` first. A message with only that one was made by yarilo and is signed with its `From` domain's key.
-- A message with any `Received` under it was forwarded: it came in through another hop (the inbound MX, yarilo's LMTP delivery, the user's submission). It is signed with `SIGN_DOMAIN`'s key, `d=` that domain, whatever its `From` says. The author's own signature, if any, stays as it was.
+- Postfix does not pass the milter the `Received` it adds itself (MILTER_README, Details: hidden for Sendmail compatibility). A message with no `Received` was made by yarilo and is signed with its `From` domain's key.
+- A message with any `Received` was forwarded: it came in through another hop (the inbound MX, yarilo's LMTP delivery, the user's submission). It is signed with `SIGN_DOMAIN`'s key, `d=` that domain, whatever its `From` says. The author's own signature, if any, stays as it was.
 
-Seen on the stand (docs-internal#266): a vacation reply has one `Received`, a redirect of an external message three, a redirect of the user's own mail four. A wrong call can only go one way: yarilo writes the headers of its own mail, so a `Received` there is never forged, and a misread message gets the forwarder's key, never the user's.
+Seen on the stand (docs-internal#266), the milter gets no `Received` with a vacation reply, three with a redirect of an external message and four with a redirect of the user's own mail. A wrong call can only go one way: yarilo writes the headers of its own mail, so a `Received` there is never forged, and a misread message gets the forwarder's key, never the user's.
 
-A login is still required, and `SIGN_DOMAIN` needs its own row in the `dkim` table (selector and key as for any domain) plus its DNS record. Without a row, forwarded mail goes unsigned as `no_key`. Without `SIGN_DOMAIN` the `Received` fields change nothing, which is what `relay-mta` needs: a user's mail arrives there with yarilo's submission hop under Postfix's own.
+A login is still required, and `SIGN_DOMAIN` needs its own row in the `dkim` table (selector and key as for any domain) plus its DNS record. Without a row, forwarded mail goes unsigned as `no_key`. Without `SIGN_DOMAIN` the `Received` fields change nothing.
+
+`SIGN_DOMAIN` belongs only on the listener where yarilo's Sieve sender logs in. Never set it on a listener for mail clients: a client's own MTA, a smarthost or yarilo's submission adds a `Received`, and the user's mail would be signed with the forwarder's key. On those listeners `aligned` decides by the login alone.
+
+On a single host one Postfix takes every role, with the milter set per listener in `master.cf` (`-o smtpd_milters=...`):
+
+| Listener | Who connects | Signer |
+|:---|:---|:---|
+| 587, 465 | mail clients, SASL login | `dkim-milter`, `aligned`, no `SIGN_DOMAIN` |
+| yarilo's Sieve sender (submission, its technical account) | yarilo only | `dkim-milter-fwd`, `any`, `SIGN_DOMAIN` |
+| 25 | inbound mail | none |
 
 `relay-fwd`'s port 25 runs no signer. Postfix sends `{auth_authen}` with `MAIL FROM` by default (`milter_mail_macros`).
 

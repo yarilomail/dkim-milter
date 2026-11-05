@@ -1126,19 +1126,19 @@ func TestChartNamesFollowTheRelease(t *testing.T) {
 	}
 }
 
-// Received fields as relay-fwd holds them on the stand (docs-internal#266).
-// own is the hop's own field, which Postfix hands the milter first.
+// Received fields a redirected message brings to relay-fwd, as the stand
+// shows them (docs-internal#266). Postfix does not pass the milter the
+// Received it adds itself, so yarilo's own mail arrives with none.
 const (
-	ownReceived    = "from localhost (yarilo-backend-1.yarilo-backend [10.1.114.14])\n\tby relay.example.org (Postfix) with ESMTP id A1D04201C84"
 	lmtpReceived   = "from ext@example.net by mail.example.org with LMTP; Thu, 05 Nov 2026 21:11:57 +0000"
 	mxReceived     = "from ext-sender.example.net (relay-mta [10.1.114.46])\n\tby relay.example.org (Postfix) with ESMTP id D036B1E0229"
 	mtaReceived    = "from mail.example.org (yarilo-backend-1 [10.1.114.14])\n\tby relay.example.org (Postfix) with ESMTPSA id C9876201C83"
 	submitReceived = "from client.example ([127.0.0.1])\n\tby yarilo with ESMTPA; Thu, 05 Nov 2026 21:16:31 +0000"
 )
 
-// With SIGN_DOMAIN set, a message with a Received under the hop's own one
-// was forwarded and is signed d=SIGN_DOMAIN; one with only the hop's own is
-// yarilo's and is signed with its From domain. A login is needed either way.
+// With SIGN_DOMAIN set, a message with any Received was forwarded and is
+// signed d=SIGN_DOMAIN; one without is yarilo's and is signed with its From
+// domain. A login is needed either way.
 // Without SIGN_DOMAIN the Received fields change nothing.
 func TestForwardedMailSignsWithTheSignDomain(t *testing.T) {
 	const fwd = "fwd.example.org"
@@ -1170,16 +1170,16 @@ func TestForwardedMailSignsWithTheSignDomain(t *testing.T) {
 		want                  string // the signing domain, "" for unsigned
 		result                string
 	}{
-		{"fwd", "vacation", "yarilo", "u1@example.org", []string{ownReceived}, "example.org", "signed"},
-		{"fwd", "redirect of an external message", "yarilo", "ext@example.net", []string{ownReceived, lmtpReceived, mxReceived}, fwd, "signed"},
-		{"fwd", "redirect of own mail to itself", "yarilo", "u1@example.org", []string{ownReceived, lmtpReceived, mtaReceived, submitReceived}, fwd, "signed"},
-		{"fwd", "one Received under the own", "yarilo", "u1@example.org", []string{ownReceived, mxReceived}, fwd, "signed"},
-		{"fwd", "redirect without a login", "", "ext@example.net", []string{ownReceived, lmtpReceived, mxReceived}, "", "unauthorized"},
-		{"fwd", "vacation without a login", "", "u1@example.org", []string{ownReceived}, "", "unauthorized"},
-		{"fwd", "redirect without a From", "yarilo", "", []string{ownReceived, lmtpReceived, mxReceived}, "", "no_from"},
-		{"off", "redirect, SIGN_DOMAIN unset", "yarilo", "u1@example.org", []string{ownReceived, lmtpReceived, mxReceived}, "example.org", "signed"},
-		{"off", "redirect of a foreign From, SIGN_DOMAIN unset", "yarilo", "ext@example.net", []string{ownReceived, lmtpReceived, mxReceived}, "", "no_key"},
-		{"fwd-no-key", "redirect, no row for SIGN_DOMAIN", "yarilo", "u1@example.org", []string{ownReceived, lmtpReceived, mxReceived}, "", "no_key"},
+		{"fwd", "vacation", "yarilo", "u1@example.org", nil, "example.org", "signed"},
+		{"fwd", "redirect of an external message", "yarilo", "ext@example.net", []string{lmtpReceived, mxReceived}, fwd, "signed"},
+		{"fwd", "redirect of own mail to itself", "yarilo", "u1@example.org", []string{lmtpReceived, mtaReceived, submitReceived}, fwd, "signed"},
+		{"fwd", "one foreign Received", "yarilo", "u1@example.org", []string{mxReceived}, fwd, "signed"},
+		{"fwd", "redirect without a login", "", "ext@example.net", []string{lmtpReceived, mxReceived}, "", "unauthorized"},
+		{"fwd", "vacation without a login", "", "u1@example.org", nil, "", "unauthorized"},
+		{"fwd", "redirect without a From", "yarilo", "", []string{lmtpReceived, mxReceived}, "", "no_from"},
+		{"off", "redirect, SIGN_DOMAIN unset", "yarilo", "u1@example.org", []string{lmtpReceived, mxReceived}, "example.org", "signed"},
+		{"off", "redirect of a foreign From, SIGN_DOMAIN unset", "yarilo", "ext@example.net", []string{lmtpReceived, mxReceived}, "", "no_key"},
+		{"fwd-no-key", "redirect, no row for SIGN_DOMAIN", "yarilo", "u1@example.org", []string{lmtpReceived, mxReceived}, "", "no_key"},
 	} {
 		t.Run(tc.srv+"/"+tc.name, func(t *testing.T) {
 			before := testutil.ToFloat64(signResults.WithLabelValues(tc.result))
@@ -1260,14 +1260,12 @@ func TestForwardedMailSignsWithTheSignDomain(t *testing.T) {
 func TestReceivedDoesNotCarryOverToTheNextMessage(t *testing.T) {
 	s := &session{signDomain: "fwd.example.org"}
 	_, _ = s.MailFrom("<>", &milter.Modifier{Macros: map[string]string{}})
-	for _, r := range []string{ownReceived, mxReceived} {
-		_, _ = s.Header("Received", r, nil)
-	}
+	_, _ = s.Header("Received", mxReceived, nil)
 	if !s.forwarded() {
-		t.Fatal("a message with two Received is not forwarded")
+		t.Fatal("a message with a Received is not forwarded")
 	}
 	_, _ = s.MailFrom("<>", &milter.Modifier{Macros: map[string]string{}})
-	_, _ = s.Header("Received", ownReceived, nil)
+	_, _ = s.Header("Subject", "hello", nil)
 	if s.forwarded() {
 		t.Error("the previous message's Received still count")
 	}
