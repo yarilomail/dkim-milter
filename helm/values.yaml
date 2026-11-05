@@ -1,5 +1,6 @@
 image:
-  repository: ghcr.io/yarilomail/dkim-milter
+  # Docker Hub keeps every release tag; GHCR is the pruned CI working set.
+  repository: docker.io/0kaba0/dkim-milter
   # Empty: the chart's appVersion, the image this chart was released with.
   tag: ""
   pullPolicy: IfNotPresent

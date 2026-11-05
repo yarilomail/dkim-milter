@@ -1,5 +1,6 @@
 # The stand runs what develop built last.
 image:
+  repository: ghcr.io/yarilomail/dkim-milter
   tag: "develop"
   pullPolicy: Always
 

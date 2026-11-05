@@ -107,7 +107,7 @@ Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selec
 
 | Value | Default | What |
 |:---|:---|:---|
-| `image.repository` / `.tag` / `.pullPolicy` | `ghcr.io/yarilomail/dkim-milter` / the chart's `appVersion` / `IfNotPresent` | image |
+| `image.repository` / `.tag` / `.pullPolicy` | `docker.io/0kaba0/dkim-milter` / the chart's `appVersion` / `IfNotPresent` | image; Docker Hub keeps every release, GHCR (`ghcr.io/yarilomail/dkim-milter`) is the pruned CI working set the stand pulls `develop` from |
 | `replicaCount` | `1` | stateless, any number |
 | `milterPort` / `metricsPort` | `8891` / `8081` | ports |
 | `db.driver` | `postgres` | `postgres` or `mysql` |
