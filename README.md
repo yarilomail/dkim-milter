@@ -31,7 +31,12 @@ Only a client that logged in with SASL has mail signed; Postfix's `{auth_authen}
 
 Any other message (no login, a login of another domain under `aligned`, mail from a local `sendmail`) is accepted unsigned with the log line `dkim: not signed, the client may not sign for the From domain` and counted as `unauthorized`; its key is not even read. In neither mode is mail signed without a login, and there is no setting for it: a signer that signs whatever reaches its port would sign for anyone who reaches Postfix.
 
-On the yarilo stand only `relay-mta` runs this milter, with `aligned`: yarilo logs in to its submission listener as the sending user, and Postfix's `sasl_username` (hence `{auth_authen}`) is that user's address, e.g. `u51@d00002.test`. Postfix sends `{auth_authen}` with `MAIL FROM` by default (`milter_mail_macros`).
+yarilo-postfix runs two releases:
+
+- `dkim-milter` with `aligned` for `relay-mta`. yarilo logs in to its submission listener as the sending user, so Postfix's `sasl_username` (hence `{auth_authen}`) is that user's address, e.g. `u51@d00002.test` on the stand.
+- `dkim-milter-fwd` with `any` for `relay-fwd`'s submission listener (587). Only yarilo's technical account logs in there, so every authenticated message is yarilo's own (vacation, notify, reports) and is signed with its From domain's key.
+
+`relay-fwd`'s port 25 runs no signer. Postfix sends `{auth_authen}` with `MAIL FROM` by default (`milter_mail_macros`).
 
 ## Keys
 
@@ -79,7 +84,7 @@ vault policy write dkim-milter - <<'EOF'
 path "transit/decrypt/dkim" { capabilities = ["update"] }
 EOF
 vault write auth/kubernetes/role/dkim-milter \
-  bound_service_account_names=dkim-milter \
+  bound_service_account_names=dkim-milter,dkim-milter-fwd \
   bound_service_account_namespaces=<namespace> \
   policies=dkim-milter ttl=10m
 ```
@@ -159,9 +164,9 @@ Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selec
 
 The chart's defaults are the code's; a test holds them equal.
 
-The NetworkPolicy is enforced only by a CNI that implements it: Calico (the stand), Cilium, or the kube-router built into k3s (keptemail). With flannel alone it is accepted and ignored. Both values files enable it for yarilo-postfix's `relay-mta` in the same namespace, the only Postfix that runs this milter.
+The NetworkPolicy is enforced only by a CNI that implements it: Calico (the stand), Cilium, or the kube-router built into k3s (keptemail). With flannel alone it is accepted and ignored. `values-sandbox.yaml` and `values-keptemail.yaml` enable it for yarilo-postfix's `relay-mta` and `relay-fwd` in the same namespace. The `-fwd` files narrow the second release to `relay-fwd`.
 
-The stand installs it with `helm upgrade` in `yarilo-relay`, beside yarilo-postfix; keptemail's ArgoCD application lives in `k8s_keptemail` with the cluster's other applications. The chart creates the ServiceAccount `dkim-milter`; its token is mounted only with `keyDecrypt: vault`. `helm_values/values-sandbox.yaml` reads the yarilo stand's MySQL table with Vault Transit ciphertext in `private_key_enc`, from the stand's Vault over TLS; `helm_values/values-keptemail.yaml` reads PostgreSQL with Vault Transit.
+The stand installs it with `helm upgrade` in `yarilo-relay`, beside yarilo-postfix; keptemail's ArgoCD application lives in `k8s_keptemail` with the cluster's other applications. Every resource is named after the release, so two releases share a namespace. The ServiceAccount is the release's name, and the Vault role binds both (see Vault). Its token is mounted only with `keyDecrypt: vault`. `helm_values/values-sandbox.yaml` reads the yarilo stand's MySQL table with Vault Transit ciphertext in `private_key_enc`, from the stand's Vault over TLS; `helm_values/values-keptemail.yaml` reads PostgreSQL with Vault Transit.
 
 ### Upgrading a table from before 0.1.0-dev.5
 
@@ -195,6 +200,8 @@ g() { kubectl -n yarilo-relay get secret yarilo-mysql -o jsonpath="{.data.$1}" |
 kubectl -n yarilo-relay create secret generic dkim-milter-db \
   --from-literal=DB_DSN="$(g MYSQL_USER):$(g MYSQL_PASSWORD)@tcp(mysql.db.svc.cluster.local:3306)/$(g MYSQL_DATABASE)?parseTime=true&charset=utf8mb4"
 helm upgrade --install dkim-milter helm -n yarilo-relay -f helm_values/values-sandbox.yaml
+helm upgrade --install dkim-milter-fwd helm -n yarilo-relay \
+  -f helm_values/values-sandbox.yaml -f helm_values/values-sandbox-fwd.yaml
 ```
 
 The DSN Secret elsewhere:

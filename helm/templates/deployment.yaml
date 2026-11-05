@@ -1,20 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: dkim-milter
+  name: {{ .Release.Name }}
   labels:
-    app: dkim-milter
+    app: {{ .Release.Name }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: dkim-milter
+      app: {{ .Release.Name }}
   template:
     metadata:
       labels:
-        app: dkim-milter
+        app: {{ .Release.Name }}
     spec:
-      serviceAccountName: dkim-milter
+      serviceAccountName: {{ .Release.Name }}
       automountServiceAccountToken: {{ eq .Values.keyDecrypt "vault" }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

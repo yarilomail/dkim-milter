@@ -1,0 +1,12 @@
+# keptemail's second release, dkim-milter-fwd, for relay-fwd's submission
+# listener (587), where only yarilo's technical account logs in: every
+# authenticated message is yarilo's own and is signed with its From domain's
+# key. On top of values-keptemail.yaml.
+signAuth: any
+
+networkPolicy:
+  postfix:
+    podSelector:
+      matchExpressions: null
+      matchLabels:
+        app: relay-fwd

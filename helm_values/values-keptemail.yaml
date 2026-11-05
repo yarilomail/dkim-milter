@@ -12,8 +12,8 @@ vault:
   addr: "http://vault.vault.svc:8200"
   role: dkim-milter
 
-# k3s enforces it with its kube-router; only yarilo-postfix's relay-mta in this
-# namespace runs the milter.
+# k3s enforces it with its kube-router; relay-mta and relay-fwd of
+# yarilo-postfix in this namespace run the milter.
 networkPolicy:
   enabled: true
   postfix:
@@ -21,4 +21,4 @@ networkPolicy:
       matchExpressions:
         - key: app
           operator: In
-          values: [relay-mta]
+          values: [relay-mta, relay-fwd]

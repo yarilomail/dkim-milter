@@ -1097,3 +1097,25 @@ func TestSignAuthFromTheEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// Every chart resource is named after the release, so a second release
+// (dkim-milter-fwd) can share the namespace.
+func TestChartNamesFollowTheRelease(t *testing.T) {
+	files, err := filepath.Glob("../../helm/templates/*.yaml")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("templates: %v %v", files, err)
+	}
+	fixed := regexp.MustCompile(`(?m)^\s*(name|app|serviceAccountName|commonName|- ): ?dkim-milter\s*$`)
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range fixed.FindAll(raw, -1) {
+			if strings.TrimSpace(string(m)) == "- name: dkim-milter" {
+				continue // the container's name, not a resource
+			}
+			t.Errorf("%s: %q is fixed, not {{ .Release.Name }}", filepath.Base(f), strings.TrimSpace(string(m)))
+		}
+	}
+}

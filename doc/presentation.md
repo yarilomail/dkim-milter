@@ -41,7 +41,7 @@ Postfix milter in Go that DKIM-signs each message with the key of its `From:` do
 dkim-milter/
 |- app/go/          main.go config.go keys.go vault.go signer.go metrics.go, tests, Dockerfile
 |- helm/            chart: Deployment, Service, ServiceAccount, NetworkPolicy, Vault CA Certificate
-|- helm_values/     values-sandbox.yaml (MySQL, Vault), values-keptemail.yaml (PostgreSQL, Vault)
+|- helm_values/     values-sandbox.yaml (MySQL, Vault), values-keptemail.yaml (PostgreSQL, Vault), *-fwd.yaml (second release, SIGN_AUTH any)
 |- schema/          postgres.sql, mysql.sql
 `- doc/             this document, architecture diagram
 ```
