@@ -45,7 +45,7 @@ yarilo-postfix runs two releases:
 
 The number belongs to the topology: every hop added between yarilo and the signer raises it by one. When `relay-fwd` passes mail to `relay-fwd-out`, which signs, it is 1 (`relay-fwd`'s `Received`); the `-fwd` overlays set 1.
 
-Seen on the stand (docs-internal#266), with `relay-fwd` signing, the milter gets no `Received` with a vacation reply, three with a redirect of an external message and four with a redirect of the user's own mail; behind `relay-fwd` each count is one higher, so 1 tells them apart in both layouts. A wrong call can only go one way: yarilo writes the headers of its own mail, so a `Received` there is never forged, and a misread message gets the forwarder's key, never the user's.
+Seen on the stand (docs-internal#266), with `relay-fwd` signing, the milter gets no `Received` with a vacation reply, three with a redirect of an external message and four with a redirect of the user's own mail; behind `relay-fwd` each count is one higher. A redirect can also bring a single `Received`, when the message reached yarilo's LMTP with no Postfix hop before it, so the number must match the layout: 0 while `relay-fwd` signs, 1 behind it. The `-fwd` overlays carry 1 and go out with `relay-fwd-out`. A wrong call can only go one way: yarilo writes the headers of its own mail, so a `Received` there is never forged, and a misread message gets the forwarder's key, never the user's.
 
 A login is still required, and `SIGN_DOMAIN` needs its own row in the `dkim` table (selector and key as for any domain) plus its DNS record. Without a row, forwarded mail goes unsigned as `no_key`. Without `SIGN_DOMAIN` the `Received` fields change nothing.
 

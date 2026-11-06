@@ -10,8 +10,9 @@ signAuth: any
 # mail with its From domain's key.
 signDomain: fwd.d00001.test
 
-# relay-fwd-out signs; relay-fwd's Received is the one hop before it. It also
-# holds with relay-fwd signing: yarilo's own mail brings 0, a redirect 3 or 4.
+# relay-fwd-out signs; relay-fwd's Received is the one hop before it. Only
+# with relay-fwd-out: while relay-fwd signs, a redirect may bring a single
+# Received and must stay on 0.
 signHopsBefore: 1
 
 vault:
