@@ -1,0 +1,6 @@
+apiVersion: v2
+name: dkim-milter
+description: Postfix milter that DKIM-signs each message with the key of its From domain
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,24 @@
+# keptemail: PostgreSQL in namespace postgres, keys encrypted with the Vault
+# Transit key dkim.
+db:
+  driver: postgres
+  dsnSecret:
+    name: dkim-milter-db
+    key: DB_DSN
+
+keyDecrypt: vault
+
+vault:
+  addr: "http://vault.vault.svc:8200"
+  role: dkim-milter
+
+# k3s enforces it with its kube-router; relay-mta and relay-fwd of
+# yarilo-postfix in this namespace run the milter.
+networkPolicy:
+  enabled: true
+  postfix:
+    podSelector:
+      matchExpressions:
+        - key: app
+          operator: In
+          values: [relay-mta, relay-fwd]

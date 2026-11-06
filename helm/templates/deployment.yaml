@@ -1,0 +1,133 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}
+      automountServiceAccountToken: {{ eq .Values.keyDecrypt "vault" }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+      containers:
+        - name: dkim-milter
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: milter
+              containerPort: {{ .Values.milterPort }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.metricsPort }}
+              protocol: TCP
+          env:
+            - name: LISTEN_ADDR
+              value: "0.0.0.0:{{ .Values.milterPort }}"
+            - name: METRICS_ADDR
+              value: "0.0.0.0:{{ .Values.metricsPort }}"
+            - name: MILTER_READ_TIMEOUT_SECONDS
+              value: {{ .Values.milterReadTimeoutSeconds | quote }}
+            - name: MILTER_WRITE_TIMEOUT_SECONDS
+              value: {{ .Values.milterWriteTimeoutSeconds | quote }}
+            - name: DB_DRIVER
+              value: {{ .Values.db.driver | quote }}
+            - name: DB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "db.dsnSecret.name is required" .Values.db.dsnSecret.name }}
+                  key: {{ .Values.db.dsnSecret.key }}
+            - name: DB_MAX_OPEN_CONNS
+              value: {{ .Values.db.maxOpenConns | quote }}
+            {{- with .Values.db.query }}
+            - name: DKIM_SQL_QUERY
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SIGN_AUTH
+              value: {{ .Values.signAuth | quote }}
+            {{- with .Values.signDomain }}
+            - name: SIGN_DOMAIN
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SIGN_HOPS_BEFORE
+              value: {{ .Values.signHopsBefore | quote }}
+            - name: KEY_DECRYPT
+              value: {{ .Values.keyDecrypt | quote }}
+            - name: KEY_CACHE_SIZE
+              value: {{ .Values.keyCache.size | quote }}
+            - name: KEY_CACHE_TTL_SECONDS
+              value: {{ .Values.keyCache.ttlSeconds | quote }}
+            - name: KEY_CACHE_MISS_TTL_SECONDS
+              value: {{ .Values.keyCache.missTtlSeconds | quote }}
+            {{- if eq .Values.keyDecrypt "vault" }}
+            - name: VAULT_ADDR
+              value: {{ required "vault.addr is required with keyDecrypt vault" .Values.vault.addr | quote }}
+            - name: VAULT_ROLE
+              value: {{ required "vault.role is required with keyDecrypt vault" .Values.vault.role | quote }}
+            - name: VAULT_AUTH_PATH
+              value: {{ .Values.vault.authPath | quote }}
+            - name: VAULT_TRANSIT_PATH
+              value: {{ .Values.vault.transitPath | quote }}
+            - name: VAULT_TRANSIT_KEY
+              value: {{ .Values.vault.transitKey | quote }}
+            {{- if .Values.vault.caCertSecret }}
+            - name: VAULT_CACERT
+              value: /vault-ca/ca.crt
+            {{- end }}
+            {{- end }}
+            {{- if .Values.logLevel }}
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            {{- end }}
+          {{- if and (eq .Values.keyDecrypt "vault") .Values.vault.caCertSecret }}
+          volumeMounts:
+            - name: vault-ca
+              mountPath: /vault-ca
+              readOnly: true
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- if and (eq .Values.keyDecrypt "vault") .Values.vault.caCertSecret }}
+      volumes:
+        - name: vault-ca
+          secret:
+            secretName: {{ .Values.vault.caCertSecret }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

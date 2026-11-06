@@ -1,0 +1,23 @@
+{{- if and (eq .Values.keyDecrypt "vault") .Values.vault.caCertificate.issuerRef.name }}
+# Only for ca.crt: cert-manager writes the issuing CA into this Secret beside
+# the certificate, which is how the pod learns to trust Vault's certificate.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Values.vault.caCertSecret }}
+  labels:
+    app: {{ .Release.Name }}
+spec:
+  secretName: {{ required "vault.caCertSecret names the Secret this Certificate writes" .Values.vault.caCertSecret }}
+  commonName: {{ .Release.Name }}
+  dnsNames:
+    - {{ .Release.Name }}
+  duration: 8760h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: {{ .Values.vault.caCertificate.issuerRef.name }}
+    kind: {{ .Values.vault.caCertificate.issuerRef.kind }}
+{{- end }}

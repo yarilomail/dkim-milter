@@ -1,0 +1,113 @@
+image:
+  # Docker Hub keeps every release tag; GHCR is the pruned CI working set.
+  repository: docker.io/0kaba0/dkim-milter
+  # Empty: the chart's appVersion, the image this chart was released with.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Stateless: every replica loads the same keys.
+replicaCount: 1
+
+# Milter port; Postfix points smtpd_milters / non_smtpd_milters at it.
+milterPort: 8891
+
+# A milter connection silent this long is closed. Postfix keeps one
+# connection for a whole SMTP session and says nothing while the client
+# sends, so this outlasts any session; it frees connections nobody uses.
+milterReadTimeoutSeconds: 3600
+# A reply Postfix does not take within this closes the connection.
+milterWriteTimeoutSeconds: 60
+
+# Who may reach the milter port. Needs a CNI that enforces NetworkPolicy
+# (Calico, Cilium, the kube-router built into k3s); flannel alone ignores it.
+networkPolicy:
+  enabled: false
+  # The Postfix pods that run this milter.
+  postfix:
+    podSelector: {}
+    # Empty: Postfix in this release's namespace.
+    namespaceSelector: {}
+
+# /healthz, /readyz (ready once the key query runs and, with Vault, the token
+# may decrypt), /metrics; open to every pod, for probes and Prometheus.
+metricsPort: 8081
+
+db:
+  # postgres or mysql
+  driver: postgres
+  # Secret holding the DSN: postgres://user:pass@host:5432/db?sslmode=...
+  # or, for mysql, user:pass@tcp(host:3306)/db
+  dsnSecret:
+    name: ""
+    key: DB_DSN
+  # One domain's row: domain, selector, the stored private key, with one
+  # placeholder for the domain ($1 for postgres, ? for mysql). Empty: the
+  # driver's default: SELECT domain, selector, private_key_enc FROM dkim
+  # WHERE lower(trim(domain)) = <placeholder> ORDER BY created_at DESC, id DESC LIMIT 1.
+  query: ""
+  # Connections to the database. Only a domain's first message, or a domain
+  # past its TTL in the background, takes one.
+  maxOpenConns: 10
+
+# Which authenticated clients have mail signed; without a SASL login
+# nothing is signed. aligned: the login's domain is the From domain.
+# any: every login, for a listener where only trusted accounts can log in.
+signAuth: aligned
+
+# The forwarder's domain, only for the listener where yarilo's Sieve sender
+# logs in. Empty: every message is signed with its From domain's key. Set:
+# a message that brings more Received than signHopsBefore (Postfix hides its
+# own) was forwarded (a Sieve redirect) and is signed d= this domain with its
+# own row in the dkim table; yarilo's own mail keeps its From domain's key.
+signDomain: ""
+
+# The Postfix hops between yarilo and this signer: every message, yarilo's own
+# too, brings their Received. A message with more was forwarded. 0 when yarilo
+# hands mail to this signer's Postfix directly; every hop added in between
+# raises it by one.
+signHopsBefore: 0
+
+# vault: the column holds Vault Transit ciphertext; none: the column holds PEM.
+keyDecrypt: vault
+
+# Keys load on demand into an LRU cache. A cached key past ttlSeconds keeps
+# signing while its row is read again in the background, so a new selector
+# shows within it; a domain without a row is remembered for missTtlSeconds. A parsed RSA-2048 key takes about 5 KB of
+# heap with its cache entry, Ed25519 under 1 KB: size 10000 of RSA keys is
+# about 50 MB, which resources.limits.memory must leave room for.
+keyCache:
+  size: 10000
+  ttlSeconds: 600
+  missTtlSeconds: 60
+
+vault:
+  addr: ""
+  # Kubernetes auth role bound to this release's ServiceAccount dkim-milter.
+  role: ""
+  authPath: kubernetes
+  transitPath: transit
+  transitKey: dkim
+  # Secret with ca.crt when Vault's certificate is not from a public CA.
+  caCertSecret: ""
+  # With an issuer named, the chart makes a Certificate that writes
+  # caCertSecret, so ca.crt is the issuing CA's: one that also signed Vault's.
+  caCertificate:
+    issuerRef:
+      name: ""
+      kind: Issuer
+
+# debug for one line per message with every step
+logLevel: ""
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    # keyCache.size RSA keys at about 5 KB each, plus about 30 MB for the process.
+    memory: 128Mi
+
+nodeSelector: {}

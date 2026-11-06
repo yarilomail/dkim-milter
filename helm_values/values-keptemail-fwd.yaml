@@ -1,0 +1,19 @@
+# keptemail's second release, dkim-milter-fwd, for relay-fwd-out's listener
+# (587), where only relay-fwd logs in with yarilo's mail: its own
+# mail is signed with its From domain's key, a redirect with the
+# forwarder's. On top of values-keptemail.yaml.
+signAuth: any
+
+# Forwarded mail (a Sieve redirect) is signed d=fwd.keptemail.com, yarilo's own
+# mail with its From domain's key.
+signDomain: fwd.keptemail.com
+
+# relay-fwd-out signs; relay-fwd's Received is the one hop before it.
+signHopsBefore: 1
+
+networkPolicy:
+  postfix:
+    podSelector:
+      matchExpressions: null
+      matchLabels:
+        app: relay-fwd-out

@@ -1,0 +1,27 @@
+# The stand's second release, dkim-milter-fwd, for relay-fwd-out's listener
+# (587): only relay-fwd logs in there, with yarilo's mail. Its own
+# mail (vacation, notify, reports) is signed with its From domain's key, a
+# redirect with the forwarder's. On top of values-sandbox.yaml:
+#   helm upgrade --install dkim-milter-fwd helm -n yarilo-relay \
+#     -f helm_values/values-sandbox.yaml -f helm_values/values-sandbox-fwd.yaml
+signAuth: any
+
+# Forwarded mail (a Sieve redirect) is signed d=fwd.d00001.test, yarilo's own
+# mail with its From domain's key.
+signDomain: fwd.d00001.test
+
+# relay-fwd-out signs; relay-fwd's Received is the one hop before it. Only
+# with relay-fwd-out: while relay-fwd signs, a redirect may bring a single
+# Received and must stay on 0.
+signHopsBefore: 1
+
+vault:
+  # A Secret of this release's own: two releases cannot own one Certificate.
+  caCertSecret: dkim-milter-fwd-vault-ca
+
+networkPolicy:
+  postfix:
+    podSelector:
+      matchExpressions: null
+      matchLabels:
+        app: relay-fwd-out
