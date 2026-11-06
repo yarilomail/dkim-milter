@@ -1,0 +1,55 @@
+name: Prune Docker Hub
+
+# Docker Hub keeps releases (vX.Y.Z) and latest only. Lists every other tag;
+# deletes them only with confirm.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Delete the listed tags"
+        type: boolean
+        default: false
+
+jobs:
+  prune:
+    name: Prune Docker Hub
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      HUB_REPO: 0kaba0/dkim-milter
+      KEEP: '^(latest|v[0-9]+\.[0-9]+\.[0-9]+)$'
+    steps:
+      - name: List and delete
+        env:
+          HUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          jwt=$(curl -sf -H 'Content-Type: application/json' \
+            -d "{\"username\": \"0kaba0\", \"password\": \"${HUB_TOKEN}\"}" \
+            https://hub.docker.com/v2/users/login | jq -r .token)
+          echo "::add-mask::${jwt}"
+          tags() {
+            local url="https://hub.docker.com/v2/repositories/${HUB_REPO}/tags?page_size=100"
+            while [ -n "$url" ] && [ "$url" != null ]; do
+              page=$(curl -sf -H "Authorization: Bearer ${jwt}" "$url")
+              jq -r '.results[].name' <<< "$page"
+              url=$(jq -r .next <<< "$page")
+            done
+          }
+          all=$(tags | sort)
+          drop=$(grep -Ev "$KEEP" <<< "$all" || true)
+          echo "kept: $(grep -Ec "$KEEP" <<< "$all" || true)"
+          echo "to delete ($(grep -c . <<< "$drop" || true)):"
+          printf '%s\n' "$drop"
+          if [ "$CONFIRM" != true ]; then
+            echo "list only; run with confirm to delete"
+            exit 0
+          fi
+          for t in $drop; do
+            curl -sf -X DELETE -H "Authorization: Bearer ${jwt}" \
+              "https://hub.docker.com/v2/repositories/${HUB_REPO}/tags/${t}/" \
+              && echo "deleted ${t}" || { echo "::error::delete ${t} failed"; exit 1; }
+          done
+          echo "left: $(tags | tr '\n' ' ')"
