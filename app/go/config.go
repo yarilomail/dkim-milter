@@ -19,9 +19,10 @@ const (
 	// Postfix keeps one milter connection for a whole SMTP session and is
 	// silent on it while the client sends, so the read timeout outlasts any
 	// session; it only frees connections that nobody will use again.
-	defaultMilterRead  = 3600
-	defaultMilterWrite = 60
-	defaultSATokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	defaultMilterRead     = 3600
+	defaultMilterWrite    = 60
+	defaultSignHopsBefore = 0
+	defaultSATokenFile    = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
 	// SIGN_AUTH: which authenticated clients have mail signed. aligned: a
 	// login whose domain is the From domain. any: every login, for a
@@ -57,6 +58,9 @@ type config struct {
 	// signDomain is SIGN_DOMAIN: when set, a forwarded message is signed
 	// with this domain's key instead of its From domain's.
 	signDomain string
+	// signHopsBefore is SIGN_HOPS_BEFORE: the Postfix hops between yarilo and
+	// this signer, whose Received every message brings.
+	signHopsBefore int
 }
 
 // defaultQueries read one domain's newest row, the domain compared without
@@ -65,6 +69,15 @@ type config struct {
 var defaultQueries = map[string]string{
 	"postgres": "SELECT domain, selector, private_key_enc FROM dkim WHERE lower(trim(domain)) = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
 	"mysql":    "SELECT domain, selector, private_key_enc FROM dkim WHERE lower(trim(domain)) = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+}
+
+// nonNegative reads a whole number of zero or more.
+func nonNegative(name string, def int) (int, error) {
+	v, err := strconv.Atoi(env(name, strconv.Itoa(def)))
+	if err != nil || v < 0 {
+		return 0, fmt.Errorf("config: %s %q: a whole number of 0 or more", name, os.Getenv(name))
+	}
+	return v, nil
 }
 
 // positive reads a whole number above zero.
@@ -143,6 +156,9 @@ func loadConfig() (config, error) {
 	c.signDomain = strings.ToLower(strings.TrimSpace(os.Getenv("SIGN_DOMAIN")))
 	if c.signDomain != "" && !validSignDomain.MatchString(c.signDomain) {
 		return c, fmt.Errorf("config: SIGN_DOMAIN %q: a domain name", c.signDomain)
+	}
+	if c.signHopsBefore, err = nonNegative("SIGN_HOPS_BEFORE", defaultSignHopsBefore); err != nil {
+		return c, err
 	}
 	def, ok := defaultQueries[c.dbDriver]
 	if !ok {

@@ -40,10 +40,12 @@ yarilo-postfix runs two releases:
 
 `relay-fwd` carries two kinds of mail: messages yarilo makes (vacation, notify, reports) and messages it passes on (a Sieve `redirect`). A redirected copy did not come from its author's domain, so that domain's key must not sign it. With `SIGN_DOMAIN` (values `signDomain`) set, the milter tells the two apart by the `Received` fields:
 
-- Postfix does not pass the milter the `Received` it adds itself (MILTER_README, Details: hidden for Sendmail compatibility). A message with no `Received` was made by yarilo and is signed with its `From` domain's key.
-- A message with any `Received` was forwarded: it came in through another hop (the inbound MX, yarilo's LMTP delivery, the user's submission). It is signed with `SIGN_DOMAIN`'s key, `d=` that domain, whatever its `From` says. The author's own signature, if any, stays as it was.
+- Postfix does not pass the milter the `Received` it adds itself (MILTER_README, Details: hidden for Sendmail compatibility), but it does pass those of earlier hops. `SIGN_HOPS_BEFORE` (values `signHopsBefore`, default 0) is the number of Postfix hops between yarilo and this signer: every message brings their `Received`. A message with no more than that was made by yarilo and is signed with its `From` domain's key.
+- A message with more `Received` was forwarded: it came in through another hop (the inbound MX, yarilo's LMTP delivery, the user's submission). It is signed with `SIGN_DOMAIN`'s key, `d=` that domain, whatever its `From` says. The author's own signature, if any, stays as it was.
 
-Seen on the stand (docs-internal#266), the milter gets no `Received` with a vacation reply, three with a redirect of an external message and four with a redirect of the user's own mail. A wrong call can only go one way: yarilo writes the headers of its own mail, so a `Received` there is never forged, and a misread message gets the forwarder's key, never the user's.
+The number belongs to the topology: every hop added between yarilo and the signer raises it by one. When `relay-fwd` passes mail to `relay-fwd-out`, which signs, it is 1 (`relay-fwd`'s `Received`); the `-fwd` overlays set 1.
+
+Seen on the stand (docs-internal#266), with `relay-fwd` signing, the milter gets no `Received` with a vacation reply, three with a redirect of an external message and four with a redirect of the user's own mail; behind `relay-fwd` each count is one higher, so 1 tells them apart in both layouts. A wrong call can only go one way: yarilo writes the headers of its own mail, so a `Received` there is never forged, and a misread message gets the forwarder's key, never the user's.
 
 A login is still required, and `SIGN_DOMAIN` needs its own row in the `dkim` table (selector and key as for any domain) plus its DNS record. Without a row, forwarded mail goes unsigned as `no_key`. Without `SIGN_DOMAIN` the `Received` fields change nothing.
 
@@ -136,6 +138,7 @@ milter_default_action = tempfail
 | `MILTER_WRITE_TIMEOUT_SECONDS` | `60` | a reply Postfix does not take this long closes the connection |
 | `SIGN_AUTH` | `aligned` | `aligned`: a login of the From domain; `any`: every login |
 | `SIGN_DOMAIN` | --- | the forwarder's domain: forwarded mail is signed with its key (see Forwarded mail) |
+| `SIGN_HOPS_BEFORE` | `0` | Postfix hops between yarilo and this signer; a message with more `Received` was forwarded (see Forwarded mail) |
 | `KEY_DECRYPT` | `vault` | `vault`: the column is Vault Transit ciphertext; `none`: the column is PEM (logged as a warning) |
 | `KEY_CACHE_SIZE` | `10000` | keys held, least recently used dropped first |
 | `KEY_CACHE_TTL_SECONDS` | `600` | a cached key is read again after this |
@@ -177,6 +180,7 @@ Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selec
 | `keyDecrypt` | `vault` | `vault` or `none` |
 | `signAuth` | `aligned` | as `SIGN_AUTH` |
 | `signDomain` | `""` | as `SIGN_DOMAIN`; the `-fwd` overlays set `fwd.d00001.test` (stand) and `fwd.keptemail.com` |
+| `signHopsBefore` | `0` | as `SIGN_HOPS_BEFORE`; the `-fwd` overlays set 1 |
 | `keyCache.size` / `.ttlSeconds` / `.missTtlSeconds` | `10000` / `600` / `60` | as `KEY_CACHE_SIZE`, `KEY_CACHE_TTL_SECONDS`, `KEY_CACHE_MISS_TTL_SECONDS` |
 | `resources.limits.memory` | `128Mi` | room for `keyCache.size` keys, see Keys |
 | `vault.addr`, `vault.role` | --- | required with `vault` |

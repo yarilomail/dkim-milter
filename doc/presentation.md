@@ -50,7 +50,7 @@ dkim-milter/
 
 | Part | What |
 |:---|:---|
-| milter session | signs only for a SASL-authenticated client: one of the From domain (`SIGN_AUTH=aligned`) or any (`any`); collects headers and body, signs at end of message, inserts `DKIM-Signature` at the top; with `SIGN_DOMAIN`, a message that brings any `Received` (Postfix hides its own) is signed with that domain's key |
+| milter session | signs only for a SASL-authenticated client: one of the From domain (`SIGN_AUTH=aligned`) or any (`any`); collects headers and body, signs at end of message, inserts `DKIM-Signature` at the top; with `SIGN_DOMAIN`, a message that brings more `Received` than `SIGN_HOPS_BEFORE` (Postfix hides its own) is signed with that domain's key |
 | key cache | loads a domain's newest row on its first message, LRU of `KEY_CACHE_SIZE`; past the TTL the key signs on while the row is read again in the background; tempfail only for an uncached domain while the database or Vault is down |
 | Vault client | Kubernetes login with the ServiceAccount token, kept until four fifths of its TTL; one decrypt per load |
 | metrics | `/healthz`, `/readyz` (the key query runs and the token may decrypt), `/metrics` |
@@ -66,6 +66,7 @@ dkim-milter/
 | `KEY_DECRYPT` | `vault` | `vault` or `none` |
 | `SIGN_AUTH` | `aligned` | `aligned` or `any`; no login, no signature |
 | `SIGN_DOMAIN` | --- | forwarder's domain for forwarded mail |
+| `SIGN_HOPS_BEFORE` | `0` | Postfix hops between yarilo and the signer |
 | `KEY_CACHE_SIZE` / `KEY_CACHE_TTL_SECONDS` / `KEY_CACHE_MISS_TTL_SECONDS` | `10000` / `600` / `60` | key cache |
 | `VAULT_ADDR` / `VAULT_ROLE` | --- | required with `vault` |
 | `VAULT_AUTH_PATH` / `VAULT_TRANSIT_PATH` / `VAULT_TRANSIT_KEY` | `kubernetes` / `transit` / `dkim` | mounts and key |

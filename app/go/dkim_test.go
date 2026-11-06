@@ -977,6 +977,7 @@ func TestChartDefaultsMatchTheCode(t *testing.T) {
 		{"keyCache.ttlSeconds", "KEY_CACHE_TTL_SECONDS", defaultCacheTTL},
 		{"keyCache.missTtlSeconds", "KEY_CACHE_MISS_TTL_SECONDS", defaultCacheMissTTL},
 		{"db.maxOpenConns", "DB_MAX_OPEN_CONNS", defaultDBMaxOpen},
+		{"signHopsBefore", "SIGN_HOPS_BEFORE", defaultSignHopsBefore},
 		{"milterReadTimeoutSeconds", "MILTER_READ_TIMEOUT_SECONDS", defaultMilterRead},
 		{"milterWriteTimeoutSeconds", "MILTER_WRITE_TIMEOUT_SECONDS", defaultMilterWrite},
 	} {
@@ -1134,11 +1135,13 @@ const (
 	mxReceived     = "from ext-sender.example.net (relay-mta [10.1.114.46])\n\tby relay.example.org (Postfix) with ESMTP id D036B1E0229"
 	mtaReceived    = "from mail.example.org (yarilo-backend-1 [10.1.114.14])\n\tby relay.example.org (Postfix) with ESMTPSA id C9876201C83"
 	submitReceived = "from client.example ([127.0.0.1])\n\tby yarilo with ESMTPA; Thu, 05 Nov 2026 21:16:31 +0000"
+	// fwdReceived is relay-fwd's, which every message brings to relay-fwd-out.
+	fwdReceived = "from mail.example.org (yarilo-backend-1 [10.1.114.14])\n\tby relay.example.org (Postfix) with ESMTPSA id 1A2B3C4D5E6"
 )
 
-// With SIGN_DOMAIN set, a message with any Received was forwarded and is
-// signed d=SIGN_DOMAIN; one without is yarilo's and is signed with its From
-// domain. A login is needed either way.
+// With SIGN_DOMAIN set, a message with more Received than SIGN_HOPS_BEFORE
+// was forwarded and is signed d=SIGN_DOMAIN; one with no more is yarilo's and
+// is signed with its From domain. A login is needed either way.
 // Without SIGN_DOMAIN the Received fields change nothing.
 func TestForwardedMailSignsWithTheSignDomain(t *testing.T) {
 	const fwd = "fwd.example.org"
@@ -1153,13 +1156,14 @@ func TestForwardedMailSignsWithTheSignDomain(t *testing.T) {
 	addr := map[string]string{}
 	for name, srvCfg := range map[string]struct {
 		domain string
+		hops   int
 		keys   *keyCache
-	}{"fwd": {fwd, c}, "off": {"", c}, "fwd-no-key": {fwd, noKey}} {
+	}{"fwd": {fwd, 0, c}, "off": {"", 0, c}, "fwd-no-key": {fwd, 0, noKey}, "fwd-out": {fwd, 1, c}} {
 		ln, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
-		srv := newMilterServer(config{milterRead: time.Minute, milterWrite: time.Minute, signAuth: signAuthAny, signDomain: srvCfg.domain}, srvCfg.keys)
+		srv := newMilterServer(config{milterRead: time.Minute, milterWrite: time.Minute, signAuth: signAuthAny, signDomain: srvCfg.domain, signHopsBefore: srvCfg.hops}, srvCfg.keys)
 		go func() { _ = srv.Serve(ln) }()
 		t.Cleanup(func() { _ = srv.Close() })
 		addr[name] = ln.Addr().String()
@@ -1180,6 +1184,10 @@ func TestForwardedMailSignsWithTheSignDomain(t *testing.T) {
 		{"off", "redirect, SIGN_DOMAIN unset", "yarilo", "u1@example.org", []string{lmtpReceived, mxReceived}, "example.org", "signed"},
 		{"off", "redirect of a foreign From, SIGN_DOMAIN unset", "yarilo", "ext@example.net", []string{lmtpReceived, mxReceived}, "", "no_key"},
 		{"fwd-no-key", "redirect, no row for SIGN_DOMAIN", "yarilo", "u1@example.org", []string{lmtpReceived, mxReceived}, "", "no_key"},
+		{"fwd-out", "vacation through relay-fwd", "yarilo", "u1@example.org", []string{fwdReceived}, "example.org", "signed"},
+		{"fwd-out", "redirect of an external message through relay-fwd", "yarilo", "ext@example.net", []string{fwdReceived, lmtpReceived, mxReceived}, fwd, "signed"},
+		{"fwd-out", "redirect with one hop of its own", "yarilo", "u1@example.org", []string{fwdReceived, mxReceived}, fwd, "signed"},
+		{"fwd-out", "vacation sent past relay-fwd", "yarilo", "u1@example.org", nil, "example.org", "signed"},
 	} {
 		t.Run(tc.srv+"/"+tc.name, func(t *testing.T) {
 			before := testutil.ToFloat64(signResults.WithLabelValues(tc.result))
@@ -1293,6 +1301,37 @@ func TestSignDomainFromTheEnvironment(t *testing.T) {
 		c, err := loadConfig()
 		if (err == nil) != tc.ok || tc.ok && c.signDomain != tc.want {
 			t.Errorf("SIGN_DOMAIN %q: %q %v, want %q ok=%v", tc.set, c.signDomain, err, tc.want, tc.ok)
+		}
+	}
+}
+
+// SIGN_HOPS_BEFORE: unset is 0, a whole number of 0 or more is kept,
+// anything else, an empty value too, is refused.
+func TestSignHopsBeforeFromTheEnvironment(t *testing.T) {
+	t.Setenv("DB_DSN", "x")
+	t.Setenv("KEY_DECRYPT", "none")
+	for _, tc := range []struct {
+		set   string
+		unset bool
+		want  int
+		ok    bool
+	}{
+		{"", true, 0, true},
+		{"", false, 0, false},
+		{"0", false, 0, true},
+		{"1", false, 1, true},
+		{"3", false, 3, true},
+		{"-1", false, 0, false},
+		{"one", false, 0, false},
+		{"1.5", false, 0, false},
+	} {
+		t.Setenv("SIGN_HOPS_BEFORE", tc.set)
+		if tc.unset {
+			_ = os.Unsetenv("SIGN_HOPS_BEFORE")
+		}
+		c, err := loadConfig()
+		if (err == nil) != tc.ok || tc.ok && c.signHopsBefore != tc.want {
+			t.Errorf("SIGN_HOPS_BEFORE %q (unset %v): %d %v, want %d ok=%v", tc.set, tc.unset, c.signHopsBefore, err, tc.want, tc.ok)
 		}
 	}
 }

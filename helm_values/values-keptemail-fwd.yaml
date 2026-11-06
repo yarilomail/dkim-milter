@@ -8,6 +8,9 @@ signAuth: any
 # mail with its From domain's key.
 signDomain: fwd.keptemail.com
 
+# relay-fwd-out signs; relay-fwd's Received is the one hop before it.
+signHopsBefore: 1
+
 networkPolicy:
   postfix:
     podSelector:

@@ -94,9 +94,11 @@ func waitReady(ctx context.Context, fetch func(context.Context, string) (row, bo
 // authenticated client as SIGN_AUTH allows.
 func newMilterServer(cfg config, cache *keyCache) *milter.Server {
 	return &milter.Server{
-		NewMilter: func() milter.Milter { return &session{keys: cache, signAuth: cfg.signAuth, signDomain: cfg.signDomain} },
-		Actions:   milter.OptAddHeader,
-		Protocol:  milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo,
+		NewMilter: func() milter.Milter {
+			return &session{keys: cache, signAuth: cfg.signAuth, signDomain: cfg.signDomain, hopsBefore: cfg.signHopsBefore}
+		},
+		Actions:  milter.OptAddHeader,
+		Protocol: milter.OptNoConnect | milter.OptNoHelo | milter.OptNoRcptTo,
 		// Bounds a connection that stops talking; the library also refuses
 		// packets over 1 MiB, so a peer cannot make it allocate more.
 		ReadTimeout:  cfg.milterRead,
@@ -139,7 +141,7 @@ func run() error {
 	}
 	srv := newMilterServer(cfg, cache)
 	slog.Info("dkim-milter: listening", "addr", cfg.listenAddr, "db", cfg.dbDriver, "decrypt", cfg.decrypt,
-		"sign_auth", cfg.signAuth, "sign_domain", cfg.signDomain,
+		"sign_auth", cfg.signAuth, "sign_domain", cfg.signDomain, "sign_hops_before", cfg.signHopsBefore,
 		"db_max_open", cfg.dbMaxOpen, "read_timeout", cfg.milterRead.String(),
 		"cache_size", cfg.cacheSize, "cache_ttl", cfg.cacheTTL.String(), "miss_ttl", cfg.cacheMissTTL.String())
 	errc := make(chan error, 1)
