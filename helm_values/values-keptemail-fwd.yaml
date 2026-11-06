@@ -1,5 +1,5 @@
-# keptemail's second release, dkim-milter-fwd, for relay-fwd's submission
-# listener (587), where only yarilo's technical account logs in: its own
+# keptemail's second release, dkim-milter-fwd, for relay-fwd-out's listener
+# (587), where only relay-fwd logs in with yarilo's mail: its own
 # mail is signed with its From domain's key, a redirect with the
 # forwarder's. On top of values-keptemail.yaml.
 signAuth: any
@@ -16,4 +16,4 @@ networkPolicy:
     podSelector:
       matchExpressions: null
       matchLabels:
-        app: relay-fwd
+        app: relay-fwd-out

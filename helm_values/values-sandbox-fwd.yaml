@@ -1,5 +1,5 @@
-# The stand's second release, dkim-milter-fwd, for relay-fwd's submission
-# listener (587): only yarilo's technical account logs in there. Its own
+# The stand's second release, dkim-milter-fwd, for relay-fwd-out's listener
+# (587): only relay-fwd logs in there, with yarilo's mail. Its own
 # mail (vacation, notify, reports) is signed with its From domain's key, a
 # redirect with the forwarder's. On top of values-sandbox.yaml:
 #   helm upgrade --install dkim-milter-fwd helm -n yarilo-relay \
@@ -24,4 +24,4 @@ networkPolicy:
     podSelector:
       matchExpressions: null
       matchLabels:
-        app: relay-fwd
+        app: relay-fwd-out
