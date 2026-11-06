@@ -58,10 +58,16 @@ signAuth: aligned
 
 # The forwarder's domain, only for the listener where yarilo's Sieve sender
 # logs in. Empty: every message is signed with its From domain's key. Set:
-# a message that brings any Received (Postfix hides its own) was forwarded
-# (a Sieve redirect) and is signed d= this domain with its own row in the
-# dkim table; a message with none, yarilo's own, keeps its From domain's key.
+# a message that brings more Received than signHopsBefore (Postfix hides its
+# own) was forwarded (a Sieve redirect) and is signed d= this domain with its
+# own row in the dkim table; yarilo's own mail keeps its From domain's key.
 signDomain: ""
+
+# The Postfix hops between yarilo and this signer: every message, yarilo's own
+# too, brings their Received. A message with more was forwarded. 0 when yarilo
+# hands mail to this signer's Postfix directly; every hop added in between
+# raises it by one.
+signHopsBefore: 0
 
 # vault: the column holds Vault Transit ciphertext; none: the column holds PEM.
 keyDecrypt: vault

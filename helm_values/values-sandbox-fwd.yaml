@@ -10,6 +10,11 @@ signAuth: any
 # mail with its From domain's key.
 signDomain: fwd.d00001.test
 
+# relay-fwd-out signs; relay-fwd's Received is the one hop before it. Only
+# with relay-fwd-out: while relay-fwd signs, a redirect may bring a single
+# Received and must stay on 0.
+signHopsBefore: 1
+
 vault:
   # A Secret of this release's own: two releases cannot own one Certificate.
   caCertSecret: dkim-milter-fwd-vault-ca

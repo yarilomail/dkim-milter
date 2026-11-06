@@ -35,6 +35,8 @@ type session struct {
 	signAuth string
 	// signDomain is SIGN_DOMAIN, empty when forwarded mail is not told apart.
 	signDomain string
+	// hopsBefore is SIGN_HOPS_BEFORE: Received fields every message brings.
+	hopsBefore int
 	headers    bytes.Buffer
 	// received counts the Received fields the message came with. Postfix
 	// does not pass the one it adds itself.
@@ -110,12 +112,11 @@ func (s *session) Header(name, value string, _ *milter.Modifier) (milter.Respons
 	return milter.RespContinue, nil
 }
 
-// forwarded says whether the message passed another hop before this one.
-// Postfix hides its own Received from milters, so a message yarilo made
-// (vacation, notify, reports) arrives with none, and a redirected one with
-// the hops it came in by.
+// forwarded says whether the message came through more hops than the ones
+// between yarilo and this signer. Postfix hides its own Received from
+// milters, so yarilo's own mail brings exactly hopsBefore of them.
 func (s *session) forwarded() bool {
-	return s.signDomain != "" && s.received > 0
+	return s.signDomain != "" && s.received > s.hopsBefore
 }
 
 // Headers picks the key; a message that will not be signed is accepted here,

@@ -68,6 +68,8 @@ spec:
             - name: SIGN_DOMAIN
               value: {{ . | quote }}
             {{- end }}
+            - name: SIGN_HOPS_BEFORE
+              value: {{ .Values.signHopsBefore | quote }}
             - name: KEY_DECRYPT
               value: {{ .Values.keyDecrypt | quote }}
             - name: KEY_CACHE_SIZE
