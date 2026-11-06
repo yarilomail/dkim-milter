@@ -34,7 +34,7 @@ Any other message (no login, a login of another domain under `aligned`, mail fro
 yarilo-postfix runs two releases:
 
 - `dkim-milter` with `aligned` for `relay-mta`. yarilo logs in to its submission listener as the sending user, so Postfix's `sasl_username` (hence `{auth_authen}`) is that user's address, e.g. `u51@d00002.test` on the stand.
-- `dkim-milter-fwd` with `any` and `SIGN_DOMAIN` for `relay-fwd`'s submission listener (587). Only yarilo's technical account logs in there; see below which key signs what.
+- `dkim-milter-fwd` with `any` and `SIGN_DOMAIN` for `relay-fwd-out`'s listener (587). Only `relay-fwd` logs in there, passing on yarilo's mail for other domains; see below which key signs what.
 
 ## Forwarded mail
 
@@ -191,7 +191,7 @@ Logs are JSON on stdout. One line per message: `dkim: signed` with domain, selec
 
 The chart's defaults are the code's; a test holds them equal.
 
-The NetworkPolicy is enforced only by a CNI that implements it: Calico (the stand), Cilium, or the kube-router built into k3s (keptemail). With flannel alone it is accepted and ignored. `values-sandbox.yaml` and `values-keptemail.yaml` enable it for yarilo-postfix's `relay-mta` and `relay-fwd` in the same namespace. The `-fwd` files narrow the second release to `relay-fwd`.
+The NetworkPolicy is enforced only by a CNI that implements it: Calico (the stand), Cilium, or the kube-router built into k3s (keptemail). With flannel alone it is accepted and ignored. `values-sandbox.yaml` and `values-keptemail.yaml` enable it for yarilo-postfix's `relay-mta` and `relay-fwd` in the same namespace. The `-fwd` files narrow the second release to `relay-fwd-out`.
 
 The stand installs it with `helm upgrade` in `yarilo-relay`, beside yarilo-postfix; keptemail's ArgoCD application lives in `k8s_keptemail` with the cluster's other applications. Every resource is named after the release, so two releases share a namespace. The ServiceAccount is the release's name, and the Vault role binds both (see Vault). Its token is mounted only with `keyDecrypt: vault`. `helm_values/values-sandbox.yaml` reads the yarilo stand's MySQL table with Vault Transit ciphertext in `private_key_enc`, from the stand's Vault over TLS; `helm_values/values-keptemail.yaml` reads PostgreSQL with Vault Transit.
 
