@@ -4,7 +4,7 @@ Postfix **milter** in Go that DKIM-signs each message with the key of its `From:
 
 Licensed under **AGPLv3**, see [LICENSE](LICENSE).
 
-Documentation: [DKIM signing](https://doc.yarilomail.org/latest/relay/dkim_milter.html) on doc.yarilomail.org.
+Documentation: [DKIM signing](https://doc.yarilomail.org/main/relay/dkim_milter.html) on doc.yarilomail.org.
 
 ## Why
 
