@@ -144,7 +144,7 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref_name == 'main' }}
             type=raw,value=develop,enable=${{ github.ref_name == 'develop' }}
             type=raw,value=${{ steps.version.outputs.app_version }},enable=${{ github.ref_name == 'develop' }}
-            type=raw,value=${{ steps.version.outputs.tag }},enable=${{ steps.version.outputs.is_release == 'true' }}
+            type=raw,value=${{ steps.version.outputs.app_version }},enable=${{ steps.version.outputs.is_release == 'true' }}
 
       - name: Extract metadata (Docker Hub)
         id: meta_hub
@@ -154,7 +154,7 @@ jobs:
           images: ${{ env.DOCKERHUB_IMAGE }}
           tags: |
             type=raw,value=latest
-            type=raw,value=${{ steps.version.outputs.tag }},enable=${{ steps.version.outputs.is_release == 'true' }}
+            type=raw,value=${{ steps.version.outputs.app_version }},enable=${{ steps.version.outputs.is_release == 'true' }}
 
       - name: Build and push
         uses: docker/build-push-action@v7.4.0

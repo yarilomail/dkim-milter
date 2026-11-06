@@ -1,7 +1,7 @@
 name: Prune Docker Hub
 
-# Docker Hub keeps releases (vX.Y.Z) and latest only. Lists every other tag;
-# deletes them only with confirm.
+# Docker Hub keeps releases (X.Y.Z, the chart's appVersion) and latest only.
+# Lists every other tag; deletes them only with confirm.
 on:
   workflow_dispatch:
     inputs:
@@ -18,7 +18,7 @@ jobs:
       contents: read
     env:
       HUB_REPO: 0kaba0/dkim-milter
-      KEEP: '^(latest|v[0-9]+\.[0-9]+\.[0-9]+)$'
+      KEEP: '^(latest|[0-9]+\.[0-9]+\.[0-9]+)$'
     steps:
       - name: List and delete
         env:
