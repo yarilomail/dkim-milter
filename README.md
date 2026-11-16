@@ -65,7 +65,7 @@ On a single host one Postfix takes every role, with the milter set per listener 
 
 ## Keys
 
-Rows in the table `dkim` ([schema/postgres.sql](schema/postgres.sql), [schema/mysql.sql](schema/mysql.sql)): `domain`, `selector`, `public_key`, `private_key_enc`, `created_at`. A domain may have one row per selector; its newest row signs (`ORDER BY created_at DESC, id DESC`), and the domain is compared without case and surrounding spaces, so `Example.ORG ` in the table still signs mail of `example.org`. With `KEY_DECRYPT=vault`, `private_key_enc` is the PEM private key encrypted with the Vault Transit key `dkim`: the database, its dumps and its backups hold ciphertext only, and the encryption key never leaves Vault.
+Rows in the table `dkim` ([schema/postgres.sql](schema/postgres.sql), [schema/mysql.sql](schema/mysql.sql)): `domain`, `selector`, `public_key`, `private_key_enc`, `created_at`. A domain may have one row per selector; its newest row signs (`ORDER BY created_at DESC, id DESC`), except the selector `arc`: that row is arc-milter's ARC key for the forwarder's domain, kept in the same table, and never signs DKIM; and the domain is compared without case and surrounding spaces, so `Example.ORG ` in the table still signs mail of `example.org`. With `KEY_DECRYPT=vault`, `private_key_enc` is the PEM private key encrypted with the Vault Transit key `dkim`: the database, its dumps and its backups hold ciphertext only, and the encryption key never leaves Vault.
 
 Keys load on demand. The first message of a domain reads its row (by the index on `lower(trim(domain))`), decrypts that one key with Vault Transit and keeps it in an LRU cache of `KEY_CACHE_SIZE` entries; concurrent first messages of one domain share that one query and decrypt. Only that first message waits on the database and Vault. Once `KEY_CACHE_TTL_SECONDS` have passed, the cached key goes on signing while one background read takes the row again: a new selector shows within that time, an unchanged row is not decrypted again, and a slow database or a restart of it holds no message. A domain with no row (or a key that does not decrypt or parse) is remembered as keyless for `KEY_CACHE_MISS_TTL_SECONDS` and its mail goes unsigned. The pool holds `DB_MAX_OPEN_CONNS` connections.
 
@@ -135,7 +135,7 @@ milter_default_action = tempfail
 | `DB_DRIVER` | `postgres` | `postgres` or `mysql` |
 | `DB_DSN` | --- | `postgres://user:pass@host:5432/db?sslmode=...`, or for MySQL `user:pass@tcp(host:3306)/db` |
 | `DB_MAX_OPEN_CONNS` | `10` | database connections |
-| `DKIM_SQL_QUERY` | `SELECT domain, selector, private_key_enc FROM dkim WHERE lower(trim(domain)) = $1 ORDER BY created_at DESC, id DESC LIMIT 1` (`?` for mysql) | one domain's row: domain, selector, stored private key; one placeholder, the lower-case domain |
+| `DKIM_SQL_QUERY` | `SELECT domain, selector, private_key_enc FROM dkim WHERE lower(trim(domain)) = $1 AND selector <> 'arc' ORDER BY created_at DESC, id DESC LIMIT 1` (`?` for mysql) | one domain's row: domain, selector, stored private key; one placeholder, the lower-case domain. A query of your own must leave the `arc` selector out too |
 | `MILTER_READ_TIMEOUT_SECONDS` | `3600` | a milter connection silent this long is closed; Postfix keeps one per SMTP session and is silent on it while the client sends |
 | `MILTER_WRITE_TIMEOUT_SECONDS` | `60` | a reply Postfix does not take this long closes the connection |
 | `SIGN_AUTH` | `aligned` | `aligned`: a login of the From domain; `any`: every login |

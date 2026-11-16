@@ -65,10 +65,11 @@ type config struct {
 
 // defaultQueries read one domain's newest row, the domain compared without
 // case and surrounding spaces; the placeholder is the driver's. The schema's
-// index is on the same expression.
+// index is on the same expression. The arc selector is arc-milter's key in
+// the same table and never signs DKIM.
 var defaultQueries = map[string]string{
-	"postgres": "SELECT domain, selector, private_key_enc FROM dkim WHERE lower(trim(domain)) = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
-	"mysql":    "SELECT domain, selector, private_key_enc FROM dkim WHERE lower(trim(domain)) = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+	"postgres": "SELECT domain, selector, private_key_enc FROM dkim WHERE lower(trim(domain)) = $1 AND selector <> 'arc' ORDER BY created_at DESC, id DESC LIMIT 1",
+	"mysql":    "SELECT domain, selector, private_key_enc FROM dkim WHERE lower(trim(domain)) = ? AND selector <> 'arc' ORDER BY created_at DESC, id DESC LIMIT 1",
 }
 
 // nonNegative reads a whole number of zero or more.

@@ -879,10 +879,11 @@ func TestWaitReadyRunsTheKeyQuery(t *testing.T) {
 // The default queries take the domain's newest row, its domain compared
 // without case and spaces. The SQL itself ran against MySQL 8.4 and
 // PostgreSQL 18 with the schema's index; here it is pinned.
+// The newest row of the domain signs, never arc-milter's arc row beside it.
 func TestDefaultQueriesTakeTheNewestRow(t *testing.T) {
 	for driver, ph := range map[string]string{"postgres": "$1", "mysql": "?"} {
 		q := defaultQueries[driver]
-		for _, part := range []string{"WHERE lower(trim(domain)) = " + ph, "ORDER BY created_at DESC, id DESC LIMIT 1"} {
+		for _, part := range []string{"WHERE lower(trim(domain)) = " + ph, "AND selector <> 'arc'", "ORDER BY created_at DESC, id DESC LIMIT 1"} {
 			if !strings.Contains(q, part) {
 				t.Errorf("%s query %q lacks %q", driver, q, part)
 			}
