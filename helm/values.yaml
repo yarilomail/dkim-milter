@@ -45,9 +45,10 @@ db:
   # One domain's row: domain, selector, the stored private key, with one
   # placeholder for the domain ($1 for postgres, ? for mysql). Empty: the
   # driver's default: SELECT domain, selector, private_key_enc FROM dkim
-  # WHERE lower(trim(domain)) = <placeholder> AND selector <> 'arc'
-  # ORDER BY created_at DESC, id DESC LIMIT 1. The arc row is arc-milter's
-  # key; a query of your own must leave it out too.
+  # WHERE lower(trim(domain)) = <placeholder> AND selector <> 'arc' AND
+  # selector NOT LIKE 'arc-%' ORDER BY created_at DESC, id DESC LIMIT 1.
+  # arc and arc-* are arc-milter's selectors, never a DKIM one; a query of
+  # your own must leave them out too.
   query: ""
   # Connections to the database. Only a domain's first message, or a domain
   # past its TTL in the background, takes one.

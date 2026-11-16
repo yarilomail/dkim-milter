@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -30,6 +31,7 @@ import (
 	"github.com/0kaba0hub/go-milter"
 	"github.com/emersion/go-msgauth/dkim"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	_ "modernc.org/sqlite"
 )
 
 func rsaKey(t *testing.T) *rsa.PrivateKey {
@@ -883,7 +885,7 @@ func TestWaitReadyRunsTheKeyQuery(t *testing.T) {
 func TestDefaultQueriesTakeTheNewestRow(t *testing.T) {
 	for driver, ph := range map[string]string{"postgres": "$1", "mysql": "?"} {
 		q := defaultQueries[driver]
-		for _, part := range []string{"WHERE lower(trim(domain)) = " + ph, "AND selector <> 'arc'", "ORDER BY created_at DESC, id DESC LIMIT 1"} {
+		for _, part := range []string{"WHERE lower(trim(domain)) = " + ph, "ORDER BY created_at DESC, id DESC LIMIT 1"} {
 			if !strings.Contains(q, part) {
 				t.Errorf("%s query %q lacks %q", driver, q, part)
 			}
@@ -1334,5 +1336,49 @@ func TestSignHopsBeforeFromTheEnvironment(t *testing.T) {
 		if (err == nil) != tc.ok || tc.ok && c.signHopsBefore != tc.want {
 			t.Errorf("SIGN_HOPS_BEFORE %q (unset %v): %d %v, want %d ok=%v", tc.set, tc.unset, c.signHopsBefore, err, tc.want, tc.ok)
 		}
+	}
+}
+
+// Run against a table: the newest row of the domain signs, never an ARC
+// row (arc, arc-2027 after a rotation) even when newer; a DKIM selector that
+// only starts with "arc" still signs.
+func TestDefaultQueriesSkipARCSelectors(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`CREATE TABLE dkim (id INTEGER PRIMARY KEY, domain TEXT, selector TEXT, private_key_enc TEXT, created_at INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		rows [][2]string // selector, in order of creation
+		want string
+	}{
+		{"arc newer than the DKIM row", [][2]string{{"s2026", "k1"}, {"arc", "k2"}}, "s2026"},
+		{"a rotated ARC key", [][2]string{{"s2026", "k1"}, {"arc", "k2"}, {"arc-2027", "k3"}}, "s2026"},
+		{"a DKIM selector starting with arc", [][2]string{{"s2026", "k1"}, {"archive", "k2"}}, "archive"},
+		{"only ARC rows", [][2]string{{"arc", "k1"}, {"arc-2027", "k2"}}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := db.Exec(`DELETE FROM dkim`); err != nil {
+				t.Fatal(err)
+			}
+			for i, r := range tc.rows {
+				if _, err := db.Exec(`INSERT INTO dkim (domain, selector, private_key_enc, created_at) VALUES ('fwd.example', ?, ?, ?)`, r[0], r[1], i); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for driver, q := range defaultQueries {
+				r, found, err := sqlRow(db, q)(t.Context(), "fwd.example")
+				if err != nil {
+					t.Fatalf("%s: %v", driver, err)
+				}
+				if got := map[bool]string{true: r.selector}[found]; got != tc.want {
+					t.Errorf("%s query took %q, want %q", driver, got, tc.want)
+				}
+			}
+		})
 	}
 }
