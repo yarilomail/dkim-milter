@@ -2,9 +2,9 @@
 
 Postfix **milter** in Go that DKIM-signs each message with the key of its `From:` domain. One process, one job: keys per domain from a database table, private keys encrypted with Vault Transit, signing in memory.
 
-Licensed under **AGPLv3**, see [LICENSE](LICENSE).
+Licensed under **AGPLv3**, see [LICENSE](LICENSE). **Website:** [yarilomail.org](https://yarilomail.org) · **Docs:** [DKIM signing](https://doc.yarilomail.org/main/relay/dkim_milter.html) on doc.yarilomail.org
 
-Documentation: [DKIM signing](https://doc.yarilomail.org/main/relay/dkim_milter.html) on doc.yarilomail.org.
+[![CI](https://github.com/yarilomail/dkim-milter/actions/workflows/ci.yaml/badge.svg?branch=develop)](https://github.com/yarilomail/dkim-milter/actions/workflows/ci.yaml) [![Go 1.27](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](app/go/go.mod) [![Container](https://img.shields.io/badge/ghcr.io-dkim--milter-blue?logo=github)](https://github.com/yarilomail/dkim-milter/pkgs/container/dkim-milter) [![Docker Hub](https://img.shields.io/docker/pulls/0kaba0/dkim-milter?logo=docker&logoColor=white)](https://hub.docker.com/r/0kaba0/dkim-milter) [![License: AGPL v3](https://img.shields.io/badge/license-AGPLv3-blue.svg)](LICENSE) ![Status: stable](https://img.shields.io/badge/status-stable-brightgreen)
 
 ## Why
 
