@@ -1,5 +1,5 @@
 # Bases pinned by digest, the same as the yarilo image; dependabot moves them.
-FROM golang:1.27.3-alpine3.24@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS builder
+FROM golang:1.27.4-alpine3.24@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS builder
 
 # A newer go.mod must fail the build, not fetch a toolchain.
 ENV GOTOOLCHAIN=local
@@ -12,7 +12,7 @@ COPY *.go ./
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-s -w" -trimpath -o dkim-milter .
 
-FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
 # hadolint ignore=DL3018,DL3019
 RUN apk upgrade --no-cache && apk add --no-cache ca-certificates
