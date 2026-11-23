@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/0kaba0hub/go-milter v0.5.1
 	github.com/emersion/go-msgauth v0.7.0
-	github.com/go-sql-driver/mysql v1.10.1
+	github.com/go-sql-driver/mysql v1.10.2
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/prometheus/client_golang v1.25.0
 	modernc.org/sqlite v1.62.0
